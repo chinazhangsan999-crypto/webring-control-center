@@ -20,6 +20,8 @@ test('未登录时静态页面可访问且后台壳层受 hidden 规则保护', 
     assert.match(html, /id="appShell" class="app-shell" hidden/);
     assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}/);
     assert.match(html, /class="sidebar tabs"/);
+    assert.match(html, /id="navToggle"/);
+    assert.match(html, /name="color-scheme" content="light"/);
     assert.match(html, /data-view="security"/);
   } finally {
     await new Promise(resolve => server.close(resolve));
