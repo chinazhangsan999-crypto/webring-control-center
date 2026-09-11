@@ -1,0 +1,28 @@
+'use strict';
+
+process.env.DATABASE_URL ||= 'postgres://test:test@127.0.0.1/test';
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const app = require('../src/app');
+const { pool } = require('../src/db');
+
+test('未登录时静态页面可访问且后台壳层受 hidden 规则保护', async () => {
+  const server = app.listen(0, '127.0.0.1');
+  try {
+    await new Promise(resolve => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/`);
+    const html = await response.text();
+    const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
+    assert.match(html, /id="appShell" class="app-shell" hidden/);
+    assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}/);
+    assert.match(html, /class="sidebar tabs"/);
+    assert.match(html, /data-view="security"/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await pool.end();
+  }
+});

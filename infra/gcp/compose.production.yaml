@@ -1,0 +1,7 @@
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: control_center
+      POSTGRES_USER: control_center
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    restart: unless-stopped

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Webring Control Center backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:40:00 Asia/Shanghai
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

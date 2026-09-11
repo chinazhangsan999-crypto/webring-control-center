@@ -1,0 +1,24 @@
+{
+  "name": "webring-control-center",
+  "version": "0.1.0",
+  "private": true,
+  "description": "多导航站统一管理中心",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node src/migrate.js",
+    "test": "node --test",
+    "check": "node --check src/server.js && node --check src/routes/admin.js && node --check src/services/jobWorker.js && node --check src/services/alertService.js && node --check public/app.js",
+    "test:local": "npm run check && npm test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^5.1.0",
+    "pg": "^8.16.3",
+    "wrangler": "^4.131.0"
+  }
+}

@@ -1,0 +1,25 @@
+[Unit]
+Description=Webring Control Center
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=webring
+Group=webring
+WorkingDirectory=/opt/webring-control-center/app
+EnvironmentFile=/opt/webring-control-center/secrets/control-center.env
+ExecStart=/usr/bin/node /opt/webring-control-center/app/src/server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/webring-control-center/app/var -/opt/webring-control-center/app/.wrangler -/opt/webring-control-center/app/node_modules/.cache/wrangler /opt/webring-control-center/var
+
+[Install]
+WantedBy=multi-user.target

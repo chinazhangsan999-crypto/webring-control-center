@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: control_center
+      POSTGRES_USER: control_center
+      POSTGRES_PASSWORD: change-me
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - control_center_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U control_center -d control_center"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  control_center_pg:
