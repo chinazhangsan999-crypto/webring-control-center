@@ -34,3 +34,18 @@ test('未登录时静态页面可访问且后台壳层受 hidden 规则保护', 
     await pool.end();
   }
 });
+
+test('Linux 运维脚本使用 LF 换行，避免 systemd 读取到 bash 回车', () => {
+  const files = [
+    'infra/gcp/bootstrap.sh',
+    'infra/gcp/configure-production.sh',
+    'infra/gcp/deploy-control-center.sh',
+    'infra/gcp/inspect-control-center.sh',
+    'infra/gcp/control-center-backup'
+  ];
+
+  for (const file of files) {
+    const content = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    assert.doesNotMatch(content, /\r\n/, `${file} 必须使用 LF 换行`);
+  }
+});

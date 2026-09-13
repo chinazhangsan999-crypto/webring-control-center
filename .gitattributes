@@ -1,0 +1,8 @@
+* text=auto
+
+*.sh text eol=lf
+infra/gcp/Caddyfile text eol=lf
+infra/gcp/control-center-backup text eol=lf
+infra/gcp/*.service text eol=lf
+infra/gcp/*.timer text eol=lf
+infra/gcp/*.yaml text eol=lf
