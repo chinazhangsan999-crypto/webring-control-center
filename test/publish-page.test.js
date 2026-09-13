@@ -49,6 +49,10 @@ test('发布页静态包可独立部署且包含完整性清单', () => {
   assert.match(bundle['index.html'], /跳到主要内容/);
   assert.doesNotMatch(bundle['index.html'], /<script[^>]+src=/);
   assert.doesNotMatch(bundle['index.html'], /<link[^>]+stylesheet/);
+  assert.match(bundle['index.html'], /rel="icon" href="data:image\/svg\+xml/);
+  const metaCsp = bundle['index.html'].match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
+  assert.doesNotMatch(metaCsp, /frame-ancestors/);
+  assert.match(bundle['_headers'], /frame-ancestors 'none'/);
   const manifest = JSON.parse(bundle['publish-manifest.json']);
   assert.equal(manifest.sha256, crypto.createHash('sha256').update(bundle['index.html']).digest('hex'));
   assert.equal(manifest.addresses.github_pages, 'https://owner.github.io/publish/');

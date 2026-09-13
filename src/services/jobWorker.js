@@ -17,6 +17,18 @@ let startedAt = null;
 let lastTickAt = null;
 let lastWorkerError = '';
 
+function publishEntries(site, nodes = []) {
+  const manualEntries = Array.isArray(site.payload?.entries) ? site.payload.entries : [];
+  const enabledNodes = nodes
+    .filter(node => node.enabled !== false)
+    .map(node => ({ name: node.speed_name, url: node.url, note: node.partner_name }));
+  return [
+    { name: '主站官方入口', url: site.public_url, note: site.name, official: true },
+    ...enabledNodes,
+    ...manualEntries
+  ];
+}
+
 async function claimJob() {
   return transaction(async client => {
     const result = await client.query(`SELECT * FROM jobs WHERE status='queued' AND available_at<=NOW() AND attempts<max_attempts
@@ -39,9 +51,7 @@ async function preparePublishPage(siteId, options = {}) {
     throw new PublishDeploymentService.DeploymentError('站点节点已变化，请重新创建发布任务', { retryable: false });
   }
   const effectiveConfig = await ControlService.resolveSiteConfig(siteId);
-  const entries = Array.isArray(site.payload?.entries) && site.payload.entries.length
-    ? site.payload.entries
-    : [{ name: '主站官方入口', url: site.public_url, note: site.name, official: true }, ...effectiveConfig.nodes.map(node => ({ name: node.speed_name, url: node.url, note: node.partner_name }))];
+  const entries = publishEntries(site, effectiveConfig.nodes);
   const bundle = renderPublishBundle({ siteName: site.name, siteUrl: site.public_url, logoUrl: site.payload?.logo_url, headline: site.payload?.page_title, description: site.payload?.description, announcement: site.payload?.announcement, permanentUrl: site.permanent_url, githubPagesUrl: site.github_pages_url, contactEmail: site.contact_email, entries, generatedAt: options.generatedAt });
   return { site, bundle };
 }
@@ -190,4 +200,4 @@ function getWorkerStatus() {
   return { running: !stopped, busy: Boolean(activeRun), started_at: startedAt?.toISOString() || null, last_tick_at: lastTickAt?.toISOString() || null, last_error: lastWorkerError };
 }
 
-module.exports = { startJobWorker, stopJobWorker, getWorkerStatus, recoverStaleJobs, claimJob, preparePublishPage, renderPublishPreview, buildPublishPage, runPublishWorkflow, runJob };
+module.exports = { startJobWorker, stopJobWorker, getWorkerStatus, recoverStaleJobs, claimJob, publishEntries, preparePublishPage, renderPublishPreview, buildPublishPage, runPublishWorkflow, runJob };
