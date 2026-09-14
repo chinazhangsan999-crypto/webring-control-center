@@ -45,7 +45,11 @@ test('发布页静态包可独立部署且包含完整性清单', () => {
   assert.deepEqual(Object.keys(bundle).sort(), ['.nojekyll', '404.html', '_headers', 'index.html', 'publish-manifest.json'].sort());
   assert.equal(bundle['404.html'], bundle['index.html']);
   assert.match(bundle['index.html'], /复制邮箱/);
-  assert.match(bundle['index.html'], /setTimeout\(\(\)=>controller\.abort\(\),5000\)/);
+  assert.match(bundle['index.html'], /new URL\('\/api\/health',card\.dataset\.url\)\.href/);
+  assert.match(bundle['index.html'], /setTimeout\(\(\)=>controller\.abort\(\),4000\)/);
+  assert.match(bundle['index.html'], /if\(!response\.ok\)throw new Error/);
+  assert.match(bundle['index.html'], /redirect:'error'/);
+  assert.doesNotMatch(bundle['index.html'], /mode:'no-cors'/);
   assert.match(bundle['index.html'], /跳到主要内容/);
   assert.doesNotMatch(bundle['index.html'], /<script[^>]+src=/);
   assert.doesNotMatch(bundle['index.html'], /<link[^>]+stylesheet/);
