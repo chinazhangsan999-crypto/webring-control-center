@@ -67,6 +67,8 @@ test('永久发布页生成独立静态包并支持 npm 第三发布地址', () 
   assert.match(worker, /site\.public_url/);
   assert.match(adminApp, /发布完整页面到三平台/);
   assert.match(adminApp, /npm CDN 完整发布页/);
+  assert.match(adminApp, /publish-open/);
+  assert.match(adminApp, /打开页面/);
   assert.match(adminApp, /npm_package_name/);
   assert.match(adminApp, /page_title/);
 });

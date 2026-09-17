@@ -155,7 +155,7 @@ function publishState(site,config){
   return{ready,active,current,label:'有更新待发布',className:'stale'};
 }
 
-function publishAddress(label,value){return `<div class="publish-address"><span>${escapeHtml(label)}</span><div>${link(value,value||'尚未配置')}${value?`<button type="button" data-copy="${escapeHtml(value)}">复制</button>`:''}</div></div>`;}
+function publishAddress(label,value){const href=safeUrl(value);return `<div class="publish-address"><span>${escapeHtml(label)}</span><div>${link(value,value||'尚未配置')} ${href?`<div class="publish-address-actions"><a class="publish-open" href="${escapeHtml(href)}" target="_blank" rel="noopener">打开页面</a><button type="button" data-copy="${escapeHtml(href)}">复制地址</button></div>`:''}</div></div>`;}
 
 async function renderPublish() {
   state.sites = await api('/api/admin/sites');
