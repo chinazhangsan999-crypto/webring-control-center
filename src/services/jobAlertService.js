@@ -3,6 +3,7 @@
 const { one, query } = require('../db');
 const AlertService = require('./alertService');
 const { classifyJobError } = require('./jobQueueService');
+const { npmPageUrl } = require('./npmPublishService');
 
 function platformLine(name, value) {
   const labels = { succeeded: '\u5df2\u6210\u529f', failed: '\u5931\u8d25', running: '\u6267\u884c\u4e2d', pending: '\u672a\u6267\u884c' };
@@ -19,7 +20,7 @@ async function enqueueAlert(payload, siteId = null, client = null) {
 
 async function enqueueJobAlert(job, outcome, result = {}, error = null) {
   if (job.type === 'alert.send') return null;
-  const site = job.site_id ? await one(`SELECT s.name,s.public_url,p.permanent_url,p.github_pages_url
+  const site = job.site_id ? await one(`SELECT s.name,s.public_url,p.permanent_url,p.github_pages_url,p.npm_enabled,p.npm_package_name
     FROM sites s LEFT JOIN publish_pages p ON p.site_id=s.id WHERE s.id=$1`, [job.site_id]) : null;
   const success = outcome === 'succeeded';
   const lines = [
@@ -31,9 +32,10 @@ async function enqueueJobAlert(job, outcome, result = {}, error = null) {
   if (site?.public_url) lines.push(`\u7ad9\u70b9地址\uff1a${site.public_url}`);
   if (site?.permanent_url) lines.push(`\u6c38\u4e45发布地址\uff1a${site.permanent_url}`);
   if (site?.github_pages_url) lines.push(`GitHub \u53d1\u5e03地址\uff1a${site.github_pages_url}`);
+  if (site?.npm_enabled && site?.npm_package_name) lines.push(`npm CDN 发布地址：${npmPageUrl(site.npm_package_name)}`);
   if (job.type === 'publish.deploy') {
     const platforms = result?.platforms || error?.progress?.platforms || {};
-    lines.push(platformLine('Cloudflare', platforms.cloudflare), platformLine('GitHub', platforms.github));
+    lines.push(platformLine('Cloudflare', platforms.cloudflare), platformLine('GitHub', platforms.github), platformLine('npm', platforms.npm));
   }
   if (!success) {
     lines.push(`错误分类：${classifyJobError(error)}`);

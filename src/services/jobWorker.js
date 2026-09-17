@@ -9,6 +9,7 @@ const PublishDeploymentService = require('./publishDeploymentService');
 const AlertService = require('./alertService');
 const JobAlertService = require('./jobAlertService');
 const { classifyJobError, retryDelaySeconds, completedPublishSteps } = require('./jobQueueService');
+const { npmVersionForJob, npmPageUrl, npmPackageFiles } = require('./npmPublishService');
 
 let stopped = true;
 let timer = null;
@@ -52,7 +53,8 @@ async function preparePublishPage(siteId, options = {}) {
   }
   const effectiveConfig = await ControlService.resolveSiteConfig(siteId);
   const entries = publishEntries(site, effectiveConfig.nodes);
-  const bundle = renderPublishBundle({ siteName: site.name, siteUrl: site.public_url, logoUrl: site.payload?.logo_url, headline: site.payload?.page_title, description: site.payload?.description, announcement: site.payload?.announcement, permanentUrl: site.permanent_url, githubPagesUrl: site.github_pages_url, contactEmail: site.contact_email, entries, generatedAt: options.generatedAt });
+  const npmUrl = site.npm_enabled ? npmPageUrl(site.npm_package_name) : '';
+  const bundle = renderPublishBundle({ siteName: site.name, siteUrl: site.public_url, logoUrl: site.payload?.logo_url, headline: site.payload?.page_title, description: site.payload?.description, announcement: site.payload?.announcement, permanentUrl: site.permanent_url, githubPagesUrl: site.github_pages_url, npmPageUrl: npmUrl, contactEmail: site.contact_email, entries, generatedAt: options.generatedAt });
   return { site, bundle };
 }
 
@@ -67,19 +69,23 @@ async function buildPublishPage(job, options = {}) {
     nodesRevision: job.payload?.nodes_revision,
     generatedAt: options.generatedAt
   });
+  const npmVersion = site.npm_enabled ? npmVersionForJob(job.id) : '';
+  if (site.npm_enabled) Object.assign(bundle, npmPackageFiles({ packageName: site.npm_package_name, version: npmVersion, githubRepo: site.github_repo, siteName: site.name }));
   const outputRoot = path.join(__dirname, '..', '..', 'var', 'publish-pages');
   const siteDirectory = path.join(outputRoot, site.slug);
+  await fs.rm(siteDirectory, { recursive: true, force: true });
   await fs.mkdir(siteDirectory, { recursive: true });
   const names = Object.keys(bundle).filter(name => name !== 'publish-manifest.json');
   names.push('publish-manifest.json');
   for (const name of names) {
-    const temporary = path.join(siteDirectory, `.${name}.${process.pid}.tmp`);
     const destination = path.join(siteDirectory, name);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    const temporary = path.join(path.dirname(destination), `.${path.basename(name)}.${process.pid}.tmp`);
     await fs.writeFile(temporary, bundle[name], 'utf8');
     await fs.rename(temporary, destination);
   }
   const html = bundle['index.html'];
-  return { output: path.join(siteDirectory, 'index.html'), directory: siteDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
+  return { output: path.join(siteDirectory, 'index.html'), directory: siteDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled ? npmPageUrl(site.npm_package_name) : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
 }
 
 async function saveJobProgress(jobId, result, current = null, total = null) {
@@ -99,7 +105,8 @@ async function runPublishWorkflow(job, dependencies = {}) {
     await query('UPDATE jobs SET payload=$2::jsonb WHERE id=$1', [job.id, JSON.stringify(job.payload)]);
   }
   const progress = { ...previous, build };
-  await saveJobProgress(job.id, progress, 1, 3);
+  const progressTotal = build.npm_package_name ? 4 : 3;
+  await saveJobProgress(job.id, progress, 1, progressTotal);
   try {
     const platforms = await PublishDeploymentService.deployDualPlatform({
       directory: build.directory,
@@ -108,11 +115,13 @@ async function runPublishWorkflow(job, dependencies = {}) {
       githubRepo: build.github_repo,
       githubPagesUrl: build.github_pages_url,
       cloudflareProject: build.cloudflare_project,
+      npmPackageName: build.npm_package_name,
+      npmVersion: build.npm_version,
       permanentUrl: build.permanent_url,
       credentials: PublishDeploymentService.deploymentCredentials()
     }, previous.platforms || {}, {
       ...dependencies,
-      onProgress: async platforms => saveJobProgress(job.id, { ...progress, platforms }, completedPublishSteps(platforms), 3)
+      onProgress: async platforms => saveJobProgress(job.id, { ...progress, platforms }, completedPublishSteps(platforms), progressTotal)
     });
     const current = await one('SELECT publish_revision,nodes_revision FROM site_revisions WHERE site_id=$1', [job.site_id]);
     if (!current || Number(current.publish_revision) !== Number(expectedRevisions.publish_revision) || Number(current.nodes_revision) !== Number(expectedRevisions.nodes_revision)) {

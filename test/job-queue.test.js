@@ -23,4 +23,5 @@ test('双平台发布进度按完成平台计算', () => {
   assert.equal(completedPublishSteps({}), 1);
   assert.equal(completedPublishSteps({ cloudflare: { status: 'succeeded' } }), 2);
   assert.equal(completedPublishSteps({ cloudflare: { status: 'succeeded' }, github: { status: 'failed' } }), 3);
+  assert.equal(completedPublishSteps({ cloudflare: { status: 'succeeded' }, github: { status: 'succeeded' }, npm: { status: 'succeeded' } }), 4);
 });

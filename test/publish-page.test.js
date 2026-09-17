@@ -7,10 +7,11 @@ const crypto = require('node:crypto');
 const { renderPublishPage, renderPublishBundle, normalizeEntries } = require('../packages/publish-page-template/render');
 const { parsePublishPayload } = require('../src/services/controlService');
 
-test('发布页同时展示自定义域名与 GitHub Pages 地址', () => {
-  const html = renderPublishPage({ siteName: '测试站', permanentUrl: 'https://publish.example.com', githubPagesUrl: 'https://owner.github.io/site/', entries: [{ name: '主入口', url: 'https://site.example.com' }] });
+test('发布页同时展示自定义域名、GitHub Pages 与 npm CDN 地址', () => {
+  const html = renderPublishPage({ siteName: '测试站', permanentUrl: 'https://publish.example.com', githubPagesUrl: 'https://owner.github.io/site/', npmPageUrl: 'https://unpkg.com/link-status-page@latest/index.html', entries: [{ name: '主入口', url: 'https://site.example.com' }] });
   assert.match(html, /https:\/\/publish\.example\.com/);
   assert.match(html, /https:\/\/owner\.github\.io\/site\//);
+  assert.match(html, /https:\/\/unpkg\.com\/link-status-page@latest\/index\.html/);
   assert.doesNotMatch(html, /pages\.dev/);
 });
 
@@ -38,6 +39,7 @@ test('发布页静态包可独立部署且包含完整性清单', () => {
     siteName: '小星星爱导航',
     permanentUrl: 'https://go.example.com/',
     githubPagesUrl: 'https://owner.github.io/publish/',
+    npmPageUrl: 'https://unpkg.com/link-status-page@latest/index.html',
     contactEmail: 'admin@example.com',
     entries: [{ name: '主站', url: 'https://site.example.com' }],
     generatedAt: '2026-09-11T02:00:00.000Z'
@@ -61,6 +63,7 @@ test('发布页静态包可独立部署且包含完整性清单', () => {
   const manifest = JSON.parse(bundle['publish-manifest.json']);
   assert.equal(manifest.sha256, crypto.createHash('sha256').update(bundle['index.html']).digest('hex'));
   assert.equal(manifest.addresses.github_pages, 'https://owner.github.io/publish/');
+  assert.equal(manifest.addresses.npm_cdn, 'https://unpkg.com/link-status-page@latest/index.html');
 });
 
 test('发布页后台配置只保留受支持字段并校验地址', () => {

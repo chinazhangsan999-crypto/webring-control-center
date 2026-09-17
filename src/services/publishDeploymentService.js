@@ -6,6 +6,7 @@ const { promisify } = require('node:util');
 const { execFile } = require('node:child_process');
 
 const execFileAsync = promisify(execFile);
+const { npmPageUrl } = require('./npmPublishService');
 const GITHUB_API = 'https://api.github.com';
 const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 const GITHUB_API_VERSION = '2026-03-10';
@@ -77,7 +78,7 @@ async function githubRequest(fetchImpl, token, endpoint, options = {}) {
 async function readBundleFiles(directory, fileNames) {
   const files = [];
   for (const name of fileNames) {
-    if (!/^(?:index\.html|404\.html|\.nojekyll|_headers|publish-manifest\.json)$/.test(name)) {
+    if (!/^(?:index\.html|404\.html|\.nojekyll|_headers|publish-manifest\.json|package\.json|README\.md|\.github\/workflows\/publish-npm\.yml)$/.test(name)) {
       throw new DeploymentError(`发布包包含不允许的文件：${name}`, { retryable: false });
     }
     files.push({ name, content: await fs.readFile(path.join(directory, name)) });
@@ -201,6 +202,56 @@ async function deployCloudflarePages(input, dependencies = {}) {
   }
 }
 
+async function triggerNpmPublish(input, dependencies = {}) {
+  const fetchImpl = dependencies.fetchImpl || fetch;
+  const { githubToken, githubBranch } = input.credentials;
+  const { owner, repo } = parseGithubRepo(input.githubRepo);
+  const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  const branchPath = githubBranch.split('/').map(encodeURIComponent).join('/');
+  const targetRef = await githubRequest(fetchImpl, githubToken, `${base}/git/ref/heads/${branchPath}`);
+  const parentSha = targetRef.data?.object?.sha;
+  if (!parentSha) throw new DeploymentError('GitHub Pages 分支不存在，无法触发 npm 发布', { platform: 'npm', retryable: true });
+  const parent = await githubRequest(fetchImpl, githubToken, `${base}/git/commits/${encodeURIComponent(parentSha)}`);
+  const blob = await githubRequest(fetchImpl, githubToken, `${base}/git/blobs`, {
+    method: 'POST',
+    body: { content: `${input.npmVersion}\n${input.sha256}\n${new Date().toISOString()}\n`, encoding: 'utf-8' }
+  });
+  const tree = await githubRequest(fetchImpl, githubToken, `${base}/git/trees`, {
+    method: 'POST',
+    body: { base_tree: parent.data.tree.sha, tree: [{ path: '.npm-publish-trigger', mode: '100644', type: 'blob', sha: blob.data.sha }] }
+  });
+  const commit = await githubRequest(fetchImpl, githubToken, `${base}/git/commits`, {
+    method: 'POST',
+    body: { message: `触发 npm 发布 ${input.npmVersion}`, tree: tree.data.sha, parents: [parentSha] }
+  });
+  await githubRequest(fetchImpl, githubToken, `${base}/git/refs/heads/${branchPath}`, {
+    method: 'PATCH', body: { sha: commit.data.sha, force: false }
+  });
+  return { trigger_commit_sha: commit.data.sha };
+}
+
+async function deployNpmPackage(input, dependencies = {}) {
+  const verify = dependencies.verify || verifyPublishedManifest;
+  const exactUrl = npmPageUrl(input.npmPackageName, input.npmVersion);
+  const stableUrl = npmPageUrl(input.npmPackageName);
+  const exactBaseUrl = exactUrl.replace(/index\.html$/, '');
+  const stableBaseUrl = stableUrl.replace(/index\.html$/, '');
+  try {
+    const existing = await verify(exactBaseUrl, input.sha256, { ...dependencies, attempts: 1, intervalMs: 1 });
+    const stable = await verify(stableBaseUrl, input.sha256, dependencies);
+    return { package: input.npmPackageName, version: input.npmVersion, url: stableUrl, already_published: true, exact_manifest_url: existing.manifest_url, manifest_url: stable.manifest_url };
+  } catch {}
+  const triggered = await (dependencies.triggerNpm || triggerNpmPublish)(input, dependencies);
+  try {
+    const exact = await verify(exactBaseUrl, input.sha256, { ...dependencies, attempts: dependencies.npmAttempts || 60, intervalMs: dependencies.npmIntervalMs || 10_000 });
+    const stable = await verify(stableBaseUrl, input.sha256, { ...dependencies, attempts: dependencies.npmAttempts || 60, intervalMs: dependencies.npmIntervalMs || 10_000 });
+    return { ...triggered, package: input.npmPackageName, version: input.npmVersion, url: stableUrl, exact_url: exactUrl, exact_manifest_url: exact.manifest_url, manifest_url: stable.manifest_url };
+  } catch (error) {
+    if (error instanceof DeploymentError) error.platform = 'npm';
+    throw error;
+  }
+}
+
 async function verifyPublishedManifest(baseUrl, expectedSha, dependencies = {}) {
   const fetchImpl = dependencies.fetchImpl || fetch;
   const wait = dependencies.wait || (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
@@ -227,7 +278,8 @@ async function deployDualPlatform(input, previous = {}, dependencies = {}) {
   const startedAt = new Date().toISOString();
   const progress = {
     github: previous.github?.status === 'succeeded' ? previous.github : { status: 'running', started_at: startedAt },
-    cloudflare: previous.cloudflare?.status === 'succeeded' ? previous.cloudflare : { status: 'running', started_at: startedAt }
+    cloudflare: previous.cloudflare?.status === 'succeeded' ? previous.cloudflare : { status: 'running', started_at: startedAt },
+    ...(input.npmPackageName ? { npm: previous.npm?.status === 'succeeded' ? previous.npm : { status: 'pending' } } : {})
   };
   await dependencies.onProgress?.(progress);
   const tasks = [];
@@ -249,6 +301,21 @@ async function deployDualPlatform(input, previous = {}, dependencies = {}) {
       : item.value;
   });
   await dependencies.onProgress?.(progress);
+  if (input.npmPackageName && progress.npm.status !== 'succeeded') {
+    if (progress.github.status !== 'succeeded') {
+      progress.npm = { status: 'failed', error: 'GitHub Pages 发布失败，未触发 npm OIDC 工作流', retryable: progress.github.retryable !== false, finished_at: new Date().toISOString() };
+    } else {
+      progress.npm = { status: 'running', started_at: new Date().toISOString() };
+      await dependencies.onProgress?.(progress);
+      try {
+        const deployed = await (dependencies.deployNpm || deployNpmPackage)(input, dependencies);
+        progress.npm = { status: 'succeeded', ...deployed, finished_at: new Date().toISOString() };
+      } catch (error) {
+        progress.npm = { status: 'failed', error: String(error.message || error).slice(0, 500), retryable: error.retryable !== false, finished_at: new Date().toISOString() };
+      }
+      await dependencies.onProgress?.(progress);
+    }
+  }
   const failures = Object.entries(progress).filter(([, result]) => result.status !== 'succeeded');
   if (failures.length) {
     throw new DeploymentError(failures.map(([platform, result]) => `${platform}: ${result.error}`).join('；'), {
@@ -265,6 +332,8 @@ module.exports = {
   readBundleFiles,
   deployGithubPages,
   deployCloudflarePages,
+  triggerNpmPublish,
+  deployNpmPackage,
   redactSecret,
   verifyPublishedManifest,
   deployDualPlatform

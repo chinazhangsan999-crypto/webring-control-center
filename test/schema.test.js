@@ -57,3 +57,9 @@ test('第十阶段迁移增加队列优先级、进度、心跳与错误码', ()
   assert.match(sql, /idx_jobs_claim_priority/);
   assert.match(sql, /jobs_progress_valid/);
 });
+
+test('npm 发布页迁移增加启用状态和包名', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'src', 'migrations', '007_npm_publish_page.sql'), 'utf8');
+  assert.match(sql, /npm_enabled\s+BOOLEAN\s+NOT NULL\s+DEFAULT FALSE/i);
+  assert.match(sql, /npm_package_name\s+TEXT\s+NOT NULL\s+DEFAULT ''/i);
+});

@@ -55,7 +55,7 @@ test('广告混合管理提供策略总览和单站有效快照', () => {
   assert.match(adminApp, /五个广告位策略/);
 });
 
-test('永久发布页生成独立静态包并要求双发布地址', () => {
+test('永久发布页生成独立静态包并支持 npm 第三发布地址', () => {
   const adminRoutes = source('src/routes/admin.js');
   const worker = source('src/services/jobWorker.js');
   const adminApp = source('public/app.js');
@@ -65,16 +65,19 @@ test('永久发布页生成独立静态包并要求双发布地址', () => {
   assert.match(adminRoutes, /parsePublishPayload/);
   assert.match(worker, /renderPublishBundle/);
   assert.match(worker, /site\.public_url/);
-  assert.match(adminApp, /发布到双平台/);
+  assert.match(adminApp, /发布完整页面到三平台/);
+  assert.match(adminApp, /npm CDN 完整发布页/);
+  assert.match(adminApp, /npm_package_name/);
   assert.match(adminApp, /page_title/);
 });
 
-test('双平台工作流独立记录状态并执行远端摘要校验', () => {
+test('三平台工作流独立记录状态并执行远端摘要校验', () => {
   const deployment = source('src/services/publishDeploymentService.js');
   const worker = source('src/services/jobWorker.js');
   const environment = source('.env.example');
   assert.match(deployment, /deployGithubPages/);
   assert.match(deployment, /deployCloudflarePages/);
+  assert.match(deployment, /deployNpmPackage/);
   assert.match(deployment, /verifyPublishedManifest/);
   assert.match(deployment, /Promise\.all\(/);
   assert.match(worker, /previous\.platforms/);

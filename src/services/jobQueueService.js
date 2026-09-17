@@ -3,7 +3,7 @@
 function classifyJobError(error) {
   const message = String(error?.message || error || '').toLowerCase();
   const status = Number(error?.detail?.status || error?.status || 0);
-  if (status === 401 || status === 403 || /token|credential|unauthor|forbidden|\u51ed\u636e|\u5bc6\u94a5/.test(message)) return 'AUTH';
+  if (status === 401 || status === 403 || /token|credential|unauthor|forbidden|oidc|trusted publisher|e401|e403|\u51ed\u636e|\u5bc6\u94a5/.test(message)) return 'AUTH';
   if (status === 429 || /rate.?limit|too many|\u9650\u6d41/.test(message)) return 'RATE_LIMIT';
   if (/timeout|timed out|abort|\u8d85\u65f6/.test(message)) return 'TIMEOUT';
   if (/revision|\u4fee\u8ba2|\u914d\u7f6e\u5df2\u53d8\u5316|\u8282\u70b9\u5df2\u53d8\u5316/.test(message)) return 'STALE_REVISION';
@@ -19,7 +19,7 @@ function retryDelaySeconds(attempts) {
 
 function completedPublishSteps(platforms = {}) {
   const finished = ['succeeded', 'failed'];
-  return 1 + ['cloudflare', 'github'].filter(name => finished.includes(platforms[name]?.status)).length;
+  return 1 + ['cloudflare', 'github', 'npm'].filter(name => finished.includes(platforms[name]?.status)).length;
 }
 
 module.exports = { classifyJobError, retryDelaySeconds, completedPublishSteps };

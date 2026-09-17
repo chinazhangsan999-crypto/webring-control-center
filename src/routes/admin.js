@@ -10,6 +10,7 @@ const SuperAdminService = require('../services/superAdminService');
 const JobWorker = require('../services/jobWorker');
 const AlertService = require('../services/alertService');
 const JobAlertService = require('../services/jobAlertService');
+const { normalizePackageName, npmPageUrl } = require('../services/npmPublishService');
 const { badRequest, notFound, conflict } = require('../lib/errors');
 
 const router = express.Router();
@@ -191,9 +192,13 @@ router.put('/sites/:id/ad-policies', asyncRoute(async (req,res)=>{
   return ok(res,null,'广告策略已更新');
 }));
 
-router.get('/sites/:id/publish', asyncRoute(async(req,res)=>ok(res,await one(`SELECT p.*,j.id AS deployment_job_id,j.status AS deployment_status,j.payload AS deployment_payload,j.result AS deployment_result,j.last_error AS deployment_error,j.created_at AS deployment_created_at,j.started_at AS deployment_started_at,j.finished_at AS deployed_at
-  FROM publish_pages p LEFT JOIN LATERAL (SELECT id,status,payload,result,last_error,created_at,started_at,finished_at FROM jobs WHERE type='publish.deploy' AND site_id=p.site_id ORDER BY id DESC LIMIT 1) j ON TRUE
-  WHERE p.site_id=$1`,[numericId(req.params.id)]))));
+router.get('/sites/:id/publish', asyncRoute(async(req,res)=>{
+  const row=await one(`SELECT p.*,j.id AS deployment_job_id,j.status AS deployment_status,j.payload AS deployment_payload,j.result AS deployment_result,j.last_error AS deployment_error,j.created_at AS deployment_created_at,j.started_at AS deployment_started_at,j.finished_at AS deployed_at
+    FROM publish_pages p LEFT JOIN LATERAL (SELECT id,status,payload,result,last_error,created_at,started_at,finished_at FROM jobs WHERE type='publish.deploy' AND site_id=p.site_id ORDER BY id DESC LIMIT 1) j ON TRUE
+    WHERE p.site_id=$1`,[numericId(req.params.id)]);
+  if(row?.npm_enabled&&row.npm_package_name)row.npm_page_url=npmPageUrl(row.npm_package_name);
+  return ok(res,row);
+}));
 router.get('/sites/:id/publish/preview', asyncRoute(async(req,res)=>{
   const html=await JobWorker.renderPublishPreview(numericId(req.params.id));
   res.set('content-type','text/html; charset=utf-8');
@@ -214,15 +219,17 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
   if(!permanent||!github)throw badRequest('请同时填写自定义永久发布域名和 GitHub Pages 地址');
   if(new URL(permanent).hostname.toLowerCase().endsWith('.pages.dev'))throw badRequest('自定义永久发布域名不能使用 pages.dev 原生地址');
   if(!new URL(github).hostname.toLowerCase().endsWith('.github.io'))throw badRequest('GitHub Pages 地址必须使用 github.io 原生地址');
-  const repo=String(req.body?.github_repo||'').trim().slice(0,200); const cf=String(req.body?.cloudflare_project||'').trim().slice(0,120); const email=String(req.body?.contact_email||'').trim().slice(0,200); const payload=ControlService.parsePublishPayload(req.body?.payload);
+  const repo=String(req.body?.github_repo||'').trim().slice(0,200); const cf=String(req.body?.cloudflare_project||'').trim().slice(0,120); const email=String(req.body?.contact_email||'').trim().slice(0,200); const payload=ControlService.parsePublishPayload(req.body?.payload); const npmEnabled=req.body?.npm_enabled===true; let npmPackage='';
   if(repo&&!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo))throw badRequest('GitHub 仓库请使用 owner/repository 格式');
   if(cf&&!/^[a-z0-9][a-z0-9-]{0,62}$/.test(cf))throw badRequest('Cloudflare 项目名仅支持小写字母、数字和连字符');
   if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw badRequest('防失联邮箱格式不正确');
+  try{npmPackage=req.body?.npm_package_name?normalizePackageName(req.body.npm_package_name):'';}catch(error){throw badRequest(error.message);}
+  if(npmEnabled&&!npmPackage)throw badRequest('启用 npm 发布时必须填写 npm 包名');
   const row = await transaction(async client => {
-    const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,cloudflare_project=$5,contact_email=$6,payload=$7::jsonb,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github,repo,cf,email,JSON.stringify(payload)])).rows[0];
+    const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,cloudflare_project=$5,contact_email=$6,payload=$7::jsonb,npm_enabled=$8,npm_package_name=$9,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github,repo,cf,email,JSON.stringify(payload),npmEnabled,npmPackage])).rows[0];
     if(!updated)throw notFound('站点不存在');
     await ControlService.bumpRevisions('publish',[siteId],client);
-    await ControlService.audit(actor(req),'publish.update','site',siteId,{github_repo:repo,cloudflare_project:cf},req.ip,client);
+    await ControlService.audit(actor(req),'publish.update','site',siteId,{github_repo:repo,cloudflare_project:cf,npm_enabled:npmEnabled,npm_package_name:npmPackage},req.ip,client);
     return updated;
   });
   return ok(res,row,'发布页配置已更新');
@@ -230,13 +237,15 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
 router.post('/sites/:id/publish/jobs', asyncRoute(async(req,res)=>{
   const siteId=numericId(req.params.id);
   const result=await transaction(async client=>{
-    const config=(await client.query(`SELECT p.permanent_url,p.github_pages_url,p.github_repo,p.cloudflare_project,r.publish_revision,r.nodes_revision
+    const config=(await client.query(`SELECT p.permanent_url,p.github_pages_url,p.github_repo,p.cloudflare_project,p.npm_enabled,p.npm_package_name,r.publish_revision,r.nodes_revision
       FROM publish_pages p JOIN site_revisions r ON r.site_id=p.site_id WHERE p.site_id=$1`,[siteId])).rows[0];
     if(!config)throw notFound('站点不存在');
     if(!config.permanent_url||!config.github_pages_url)throw badRequest('请先配置自定义永久发布域名和 GitHub Pages 地址');
     if(!config.github_repo||!config.cloudflare_project)throw badRequest('请先配置 GitHub 仓库和 Cloudflare 项目');
-    const inserted=await client.query(`INSERT INTO jobs(type,site_id,payload,progress_total) VALUES('publish.deploy',$1,$2::jsonb,3)
-      ON CONFLICT (type,site_id) WHERE type='publish.deploy' AND status IN ('queued','running') DO NOTHING RETURNING *`,[siteId,JSON.stringify({requested_by:req.admin.id,publish_revision:config.publish_revision,nodes_revision:config.nodes_revision})]);
+    if(config.npm_enabled&&!config.npm_package_name)throw badRequest('请先配置 npm 包名');
+    const progressTotal=config.npm_enabled?4:3;
+    const inserted=await client.query(`INSERT INTO jobs(type,site_id,payload,progress_total) VALUES('publish.deploy',$1,$2::jsonb,$3)
+      ON CONFLICT (type,site_id) WHERE type='publish.deploy' AND status IN ('queued','running') DO NOTHING RETURNING *`,[siteId,JSON.stringify({requested_by:req.admin.id,publish_revision:config.publish_revision,nodes_revision:config.nodes_revision}),progressTotal]);
     const created=Boolean(inserted.rows[0]);
     const job=inserted.rows[0]||(await client.query(`SELECT * FROM jobs WHERE type='publish.deploy' AND site_id=$1 AND status IN ('queued','running') ORDER BY id DESC LIMIT 1`,[siteId])).rows[0];
     if(created)await ControlService.audit(actor(req),'publish.deploy.queue','site',siteId,{job_id:job.id},req.ip,client);
@@ -292,7 +301,7 @@ router.post('/jobs/:id/retry', asyncRoute(async(req,res)=>{
         nextPayload={...nextPayload,publish_revision:revision.publish_revision,nodes_revision:revision.nodes_revision};nextResult={};
       }
     }
-    const updated=(await client.query(`UPDATE jobs SET status='queued',attempts=0,available_at=NOW(),started_at=NULL,finished_at=NULL,last_error='',error_code='',heartbeat_at=NULL,progress_current=0,progress_total=CASE WHEN type='publish.deploy' THEN 3 ELSE 1 END,result=$2::jsonb,payload=$3::jsonb WHERE id=$1 RETURNING *`,[id,JSON.stringify(nextResult),JSON.stringify(nextPayload)])).rows[0];
+    const updated=(await client.query(`UPDATE jobs SET status='queued',attempts=0,available_at=NOW(),started_at=NULL,finished_at=NULL,last_error='',error_code='',heartbeat_at=NULL,progress_current=0,progress_total=CASE WHEN type='publish.deploy' THEN CASE WHEN COALESCE((SELECT npm_enabled FROM publish_pages WHERE site_id=jobs.site_id),FALSE) THEN 4 ELSE 3 END ELSE 1 END,result=$2::jsonb,payload=$3::jsonb WHERE id=$1 RETURNING *`,[id,JSON.stringify(nextResult),JSON.stringify(nextPayload)])).rows[0];
     await ControlService.audit(actor(req),'job.retry','job',id,{type:updated.type,site_id:updated.site_id},req.ip,client);
     return updated;
   });
