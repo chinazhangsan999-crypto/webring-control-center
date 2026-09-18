@@ -25,9 +25,9 @@ function npmWorkflow() {
   return `name: Publish npm landing page
 
 on:
-  repository_dispatch:
-    types:
-      - publish-npm-landing-page
+  push:
+    branches:
+      - gh-pages
 
 permissions:
   contents: read
@@ -35,11 +35,10 @@ permissions:
 
 jobs:
   publish:
+    if: startsWith(github.event.head_commit.message, '触发 npm 发布')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: \${{ github.event.client_payload.publish_ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
@@ -65,8 +64,9 @@ function npmPackageFiles({ packageName, version, githubRepo, siteName }) {
   };
   return {
     'package.json': `${JSON.stringify(packageJson, null, 2)}\n`,
-    'README.md': `# ${String(siteName || '导航站').replace(/[\r\n#]/g, ' ').trim()} npm 永久发布页\n\n这是由总后台自动生成的完整静态发布页，包含入口列表、访客端线路检测、复制地址和发布完整性清单。\n`
+    'README.md': `# ${String(siteName || '导航站').replace(/[\r\n#]/g, ' ').trim()} npm 永久发布页\n\n这是由总后台自动生成的完整静态发布页，包含入口列表、访客端线路检测、复制地址和发布完整性清单。\n`,
+    '.github/workflows/publish-npm.yml': npmWorkflow()
   };
 }
 
-module.exports = { normalizePackageName, npmVersionForJob, npmPageUrl, npmPackageFiles, npmWorkflow };
+module.exports = { normalizePackageName, npmVersionForJob, npmPageUrl, npmPackageFiles };
