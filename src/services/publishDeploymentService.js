@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 const { execFile } = require('node:child_process');
 
 const execFileAsync = promisify(execFile);
-const { npmPageUrl } = require('./npmPublishService');
+const { npmPageUrl, npmWorkflow } = require('./npmPublishService');
 const GITHUB_API = 'https://api.github.com';
 const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 const GITHUB_API_VERSION = '2026-03-10';
@@ -207,27 +207,39 @@ async function triggerNpmPublish(input, dependencies = {}) {
   const { githubToken, githubBranch } = input.credentials;
   const { owner, repo } = parseGithubRepo(input.githubRepo);
   const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-  const branchPath = githubBranch.split('/').map(encodeURIComponent).join('/');
-  const targetRef = await githubRequest(fetchImpl, githubToken, `${base}/git/ref/heads/${branchPath}`);
-  const parentSha = targetRef.data?.object?.sha;
-  if (!parentSha) throw new DeploymentError('GitHub Pages 分支不存在，无法触发 npm 发布', { platform: 'npm', retryable: true });
-  const parent = await githubRequest(fetchImpl, githubToken, `${base}/git/commits/${encodeURIComponent(parentSha)}`);
-  const blob = await githubRequest(fetchImpl, githubToken, `${base}/git/blobs`, {
+  const repository = (await githubRequest(fetchImpl, githubToken, base)).data;
+  const defaultBranch = repository.default_branch;
+  if (!defaultBranch) throw new DeploymentError('GitHub 仓库缺少默认分支，无法安装 npm OIDC 工作流', { platform: 'npm', retryable: false });
+  const workflowPath = '.github/workflows/publish-npm.yml';
+  const workflowEndpoint = `${base}/contents/${workflowPath.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(defaultBranch)}`;
+  const existing = await githubRequest(fetchImpl, githubToken, workflowEndpoint, { allowed: [404] });
+  const content = npmWorkflow();
+  const existingContent = existing.status === 200 && existing.data?.content
+    ? Buffer.from(String(existing.data.content).replace(/\s/g, ''), 'base64').toString('utf8')
+    : '';
+  let workflowUpdated = false;
+  if (existingContent !== content) {
+    await githubRequest(fetchImpl, githubToken, `${base}/contents/${workflowPath.split('/').map(encodeURIComponent).join('/')}`, {
+      method: 'PUT',
+      body: {
+        message: '配置 npm OIDC 发布工作流',
+        content: Buffer.from(content).toString('base64'),
+        branch: defaultBranch,
+        ...(existing.status === 200 && existing.data?.sha ? { sha: existing.data.sha } : {})
+      }
+    });
+    workflowUpdated = true;
+    const wait = dependencies.wait || (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
+    await wait(2_000);
+  }
+  await githubRequest(fetchImpl, githubToken, `${base}/dispatches`, {
     method: 'POST',
-    body: { content: `${input.npmVersion}\n${input.sha256}\n${new Date().toISOString()}\n`, encoding: 'utf-8' }
+    body: {
+      event_type: 'publish-npm-landing-page',
+      client_payload: { publish_ref: githubBranch, version: input.npmVersion, sha256: input.sha256 }
+    }
   });
-  const tree = await githubRequest(fetchImpl, githubToken, `${base}/git/trees`, {
-    method: 'POST',
-    body: { base_tree: parent.data.tree.sha, tree: [{ path: '.npm-publish-trigger', mode: '100644', type: 'blob', sha: blob.data.sha }] }
-  });
-  const commit = await githubRequest(fetchImpl, githubToken, `${base}/git/commits`, {
-    method: 'POST',
-    body: { message: `触发 npm 发布 ${input.npmVersion}`, tree: tree.data.sha, parents: [parentSha] }
-  });
-  await githubRequest(fetchImpl, githubToken, `${base}/git/refs/heads/${branchPath}`, {
-    method: 'PATCH', body: { sha: commit.data.sha, force: false }
-  });
-  return { trigger_commit_sha: commit.data.sha };
+  return { workflow: workflowPath, workflow_branch: defaultBranch, publish_ref: githubBranch, workflow_updated: workflowUpdated };
 }
 
 async function deployNpmPackage(input, dependencies = {}) {
