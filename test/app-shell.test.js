@@ -25,8 +25,8 @@ test('未登录时静态页面可访问且后台壳层受 hidden 规则保护', 
   assert.match(html, /data-view="security"/);
   assert.match(html, /data-view="settings"/);
     assert.match(html, /data-modal-close/);
-    assert.match(html, /styles\.css\?v=8/);
-  assert.match(html, /app\.js\?v=14/);
+    assert.match(html, /styles\.css\?v=9/);
+  assert.match(html, /app\.js\?v=15/);
     const script = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
     assert.match(script, /normalizeModalMarkup\(body\)/);
     assert.match(script, /focusTitle:false/);

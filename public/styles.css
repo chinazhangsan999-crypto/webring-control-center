@@ -154,17 +154,31 @@ tr:last-child td { border-bottom: 0; }
 .job-progress::-moz-progress-bar { border-radius: inherit; background: linear-gradient(90deg, #2563eb, #6366f1); }
 .job-error-cell { min-width: 240px; max-width: 380px; color: var(--danger); white-space: normal; overflow-wrap: anywhere; }
 .job-error-cell strong { font-family: Consolas, monospace; font-size: 12px; }
-.settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.setting-card { display: grid; gap: 12px; min-height: 132px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcff; }
-.setting-card h3 { margin: 0 0 5px; font-size: 14px; }
+.settings-panel .panel-header { min-height: 58px; }
+.settings-panel .panel-header p { max-width: 78ch; margin: 3px 0 0; }
+.settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 12px; }
+.settings-grid--alerts { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 920px; }
+.setting-card { display: grid; align-content: space-between; gap: 14px; min-height: 138px; padding: 14px; border: 1px solid #e3e9f4; border-radius: 10px; background: linear-gradient(180deg, #ffffff, #f9fbff); }
+.setting-card-copy { min-width: 0; }
+.setting-kicker { display: block; margin-bottom: 5px; color: var(--primary); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.setting-card h3 { margin: 0 0 5px; font-size: 15px; line-height: 1.3; }
 .setting-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
-.setting-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
+.setting-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid #e9edf5; }
 .cdn-choice-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcff; }
 .cdn-choice-list .checkbox-line { justify-content: flex-start; min-width: 0; font-weight: 500; }
 .cdn-choice-list .checkbox-line input { flex: 0 0 auto; }
 .cdn-primary { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .cdn-primary input { margin: 0; }
+.cdn-summary { padding: 12px; }
 .cdn-summary .cdn-choice-list { max-width: 840px; }
+.cdn-route-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.cdn-route { display: flex; align-items: center; justify-content: space-between; gap: 9px; min-width: 0; min-height: 72px; padding: 11px; border: 1px solid #e3e9f4; border-radius: 10px; background: #fbfcff; }
+.cdn-route.is-enabled { border-color: #cfe9da; background: #f5fcf8; }
+.cdn-route-copy { min-width: 0; }
+.cdn-route-copy span { display: block; margin-bottom: 2px; color: var(--muted); font-size: 10px; }
+.cdn-route-copy strong { display: block; overflow-wrap: anywhere; font-size: 13px; }
+.cdn-route-state { display: flex; flex: none; flex-direction: column; align-items: flex-end; gap: 4px; }
+.primary-badge { background: #e9eeff; color: var(--primary); }
 
 .toast { position: fixed; right: 16px; bottom: 16px; z-index: 100; max-width: min(380px, calc(100vw - 32px)); padding: 9px 12px; border-radius: 10px; background: #253250; box-shadow: 0 14px 34px rgba(37, 50, 80, .22); color: #fff; font-size: 12px; }
 dialog { width: min(560px, calc(100vw - 20px)); max-height: calc(100dvh - 24px); padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 18px 48px rgba(23, 33, 59, .19); color: var(--text); }
@@ -191,6 +205,7 @@ dialog::backdrop { background: rgba(23, 33, 59, .36); backdrop-filter: blur(4px)
   .metric-grid { grid-template-columns: repeat(3, 1fr); }
   .card-list { grid-template-columns: repeat(2, 1fr); }
   .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cdn-route-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 980px) {
@@ -233,7 +248,7 @@ dialog::backdrop { background: rgba(23, 33, 59, .36); backdrop-filter: blur(4px)
   .form-grid { grid-template-columns: 1fr; }
   .span-2 { grid-column: auto; }
   .choice-grid { grid-template-columns: 1fr; }
-  .settings-grid, .cdn-choice-list { grid-template-columns: 1fr; }
+  .settings-grid, .settings-grid--alerts, .cdn-choice-list, .cdn-route-grid { grid-template-columns: 1fr; }
   .login-card { padding: 20px 16px; }
 }
 
