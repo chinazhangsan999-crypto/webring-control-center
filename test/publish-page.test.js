@@ -52,6 +52,8 @@ test('发布页静态包可独立部署且包含完整性清单', () => {
   assert.match(bundle['index.html'], /new Image\(\)/);
   assert.match(bundle['index.html'], /image\.naturalWidth===1&&image\.naturalHeight===1/);
   assert.match(bundle['index.html'], /setTimeout\(\(\)=>finish\(false,'timeout'\),5000\)/);
+  assert.match(bundle['index.html'], /status\.textContent=ok\?'正常':'检查超时'/);
+  assert.doesNotMatch(bundle['index.html'], /'正常 · '\+elapsed\+' ms'/);
   assert.doesNotMatch(bundle['index.html'], /fetch\(healthUrl/);
   assert.doesNotMatch(bundle['index.html'], /mode:'no-cors'/);
   assert.match(bundle['index.html'], /跳到主要内容/);
