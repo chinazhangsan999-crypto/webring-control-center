@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizePackageName, npmVersionForJob, npmPageUrl, npmPackageFiles } = require('../src/services/npmPublishService');
-const { deployDualPlatform } = require('../src/services/publishDeploymentService');
+const { deployDualPlatform, deployNpmPackage } = require('../src/services/publishDeploymentService');
 
 test('npm 包名支持安全的非 scoped 名称并生成稳定地址', () => {
   assert.equal(normalizePackageName('Link-Status-Page'), 'link-status-page');
@@ -41,4 +41,33 @@ test('npm 发布在 GitHub 成功后执行并计入三平台结果', async () =>
   assert.equal(result.cloudflare.status, 'succeeded');
   assert.equal(result.npm.status, 'succeeded');
   assert.ok(order.indexOf('npm') > order.indexOf('github'));
+});
+
+test('npm 精确版本存在不同清单时立即停止，不触发覆盖发布', async () => {
+  let triggered = false;
+  await assert.rejects(() => deployNpmPackage({
+    npmPackageName: 'link-status-page', npmVersion: '0.0.99', sha256: 'a'.repeat(64)
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ sha256: 'b'.repeat(64) }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    triggerNpm: async () => { triggered = true; }
+  }), error => error.retryable === false && /版本内容冲突/.test(error.message));
+  assert.equal(triggered, false);
+});
+
+test('npm 精确版本校验成功后，latest 传播延迟不会阻塞发布结果', async () => {
+  const calls = [];
+  const result = await deployNpmPackage({
+    npmPackageName: 'link-status-page', npmVersion: '0.0.99', sha256: 'a'.repeat(64), npmCdnLines: ['unpkg'], npmPrimaryCdn: 'unpkg'
+  }, {
+    fetchImpl: async () => new Response('', { status: 404 }),
+    triggerNpm: async () => ({ trigger_commit_sha: 'trigger' }),
+    verify: async url => {
+      calls.push(url);
+      if (url.includes('@latest')) throw new Error('远端清单版本尚未更新');
+      return { verified: true, manifest_url: `${url}publish-manifest.json` };
+    }
+  });
+  assert.equal(result.stable_status, 'syncing');
+  assert.equal(result.exact_url, 'https://unpkg.com/link-status-page@0.0.99/index.html');
+  assert.ok(calls.some(url => url.includes('@latest')));
 });

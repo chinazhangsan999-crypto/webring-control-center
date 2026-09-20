@@ -239,21 +239,49 @@ async function deployNpmPackage(input, dependencies = {}) {
   const verificationStableUrl = npmPageUrl(input.npmPackageName, 'latest', 'unpkg');
   const exactBaseUrl = exactUrl.replace(/index\.html$/, '');
   const stableBaseUrl = verificationStableUrl.replace(/index\.html$/, '');
+  const existing = await readPublishedManifest(exactBaseUrl, dependencies);
+  if (existing && existing.sha256 !== input.sha256) {
+    throw new DeploymentError('npm 版本内容冲突：该精确版本已存在且清单摘要不同，请创建新的发布任务', { platform: 'npm', retryable: false });
+  }
+  let triggered = {};
+  let exact;
   try {
-    const existing = await verify(exactBaseUrl, input.sha256, { ...dependencies, attempts: 1, intervalMs: 1 });
-    const stable = await verify(stableBaseUrl, input.sha256, dependencies);
+    if (existing) exact = { verified: true, manifest_url: existing.manifest_url };
+    else {
+      triggered = await (dependencies.triggerNpm || triggerNpmPublish)(input, dependencies);
+      exact = await verify(exactBaseUrl, input.sha256, { ...dependencies, attempts: dependencies.npmAttempts || 60, intervalMs: dependencies.npmIntervalMs || 10_000 });
+    }
+    const stable = await verifyNpmStable(stableBaseUrl, input.sha256, dependencies);
     const cdns = await verifyNpmCdnLines(input, dependencies);
-    return { package: input.npmPackageName, version: input.npmVersion, url: stableUrl, already_published: true, exact_manifest_url: existing.manifest_url, manifest_url: stable.manifest_url, cdns };
-  } catch {}
-  const triggered = await (dependencies.triggerNpm || triggerNpmPublish)(input, dependencies);
-  try {
-    const exact = await verify(exactBaseUrl, input.sha256, { ...dependencies, attempts: dependencies.npmAttempts || 60, intervalMs: dependencies.npmIntervalMs || 10_000 });
-    const stable = await verify(stableBaseUrl, input.sha256, { ...dependencies, attempts: dependencies.npmAttempts || 60, intervalMs: dependencies.npmIntervalMs || 10_000 });
-    const cdns = await verifyNpmCdnLines(input, dependencies);
-    return { ...triggered, package: input.npmPackageName, version: input.npmVersion, url: stableUrl, exact_url: exactUrl, exact_manifest_url: exact.manifest_url, manifest_url: stable.manifest_url, cdns };
+    return { ...triggered, package: input.npmPackageName, version: input.npmVersion, url: stableUrl, exact_url: exactUrl, exact_manifest_url: exact.manifest_url, manifest_url: stable.manifest_url || exact.manifest_url, stable_status: stable.status, stable_error: stable.error || '', cdns, already_published: Boolean(existing) };
   } catch (error) {
     if (error instanceof DeploymentError) error.platform = 'npm';
     throw error;
+  }
+}
+
+async function readPublishedManifest(baseUrl, dependencies = {}) {
+  const fetchImpl = dependencies.fetchImpl || fetch;
+  const manifestUrl = new URL('publish-manifest.json', baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`);
+  manifestUrl.searchParams.set('check', 'exact');
+  const response = await fetchImpl(manifestUrl, { cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(10_000) });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new DeploymentError(`npm 精确版本检查返回 HTTP ${response.status}`, { platform: 'npm', retryable: response.status >= 500 });
+  let manifest;
+  try { manifest = await response.json(); } catch { throw new DeploymentError('npm 精确版本返回的发布清单无效', { platform: 'npm', retryable: false }); }
+  if (!/^[a-f0-9]{64}$/i.test(String(manifest?.sha256 || ''))) {
+    throw new DeploymentError('npm 精确版本已存在但不包含有效发布清单', { platform: 'npm', retryable: false });
+  }
+  return { sha256: manifest.sha256, manifest_url: manifestUrl.origin + manifestUrl.pathname };
+}
+
+async function verifyNpmStable(baseUrl, expectedSha, dependencies = {}) {
+  const verify = dependencies.verify || verifyPublishedManifest;
+  try {
+    const result = await verify(baseUrl, expectedSha, { ...dependencies, attempts: dependencies.npmStableAttempts || 3, intervalMs: dependencies.npmStableIntervalMs || 2_000 });
+    return { status: 'available', manifest_url: result.manifest_url };
+  } catch (error) {
+    return { status: 'syncing', error: String(error.message || error).slice(0, 300) };
   }
 }
 
@@ -363,6 +391,7 @@ module.exports = {
   deployNpmPackage,
   verifyNpmCdnLine,
   verifyNpmCdnLines,
+  readPublishedManifest,
   redactSecret,
   verifyPublishedManifest,
   deployDualPlatform

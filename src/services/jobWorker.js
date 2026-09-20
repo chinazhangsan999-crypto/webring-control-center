@@ -18,6 +18,8 @@ let activeRun = null;
 let startedAt = null;
 let lastTickAt = null;
 let lastWorkerError = '';
+const PUBLISH_BUILD_METADATA = '.publish-build.json';
+const PUBLISH_FILE_PATTERN = /^(?:index\.html|404\.html|\.nojekyll|_headers|publish-manifest\.json|package\.json|README\.md|\.github\/workflows\/publish-npm\.yml)$/;
 
 function publishEntries(site, nodes = []) {
   const manualEntries = Array.isArray(site.payload?.entries) ? site.payload.entries : [];
@@ -68,7 +70,45 @@ async function renderPublishPreview(siteId) {
   return bundle['index.html'];
 }
 
+function publishArtifactDirectory(jobId) {
+  if (!Number.isSafeInteger(Number(jobId)) || Number(jobId) < 1) throw new Error('发布任务编号不合法');
+  return path.join(__dirname, '..', '..', 'var', 'publish-pages', 'jobs', String(jobId));
+}
+
+async function loadStoredPublishBuild(directory) {
+  const metadataPath = path.join(directory, PUBLISH_BUILD_METADATA);
+  let stored;
+  try {
+    stored = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error instanceof SyntaxError) return null;
+    throw error;
+  }
+  const files = Array.isArray(stored?.files) ? stored.files : [];
+  if (!files.length || files.some(name => !PUBLISH_FILE_PATTERN.test(name))) return null;
+  let manifest;
+  try {
+    manifest = JSON.parse(await fs.readFile(path.join(directory, 'publish-manifest.json'), 'utf8'));
+    await Promise.all(files.map(name => fs.access(path.join(directory, name))));
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error instanceof SyntaxError) return null;
+    throw error;
+  }
+  if (!stored?.manifest?.sha256 || manifest?.sha256 !== stored.manifest.sha256) return null;
+  return { ...stored, directory, output: path.join(directory, 'index.html'), files, manifest };
+}
+
+async function saveStoredPublishBuild(directory, build) {
+  const destination = path.join(directory, PUBLISH_BUILD_METADATA);
+  const temporary = path.join(directory, `.${PUBLISH_BUILD_METADATA}.${process.pid}.tmp`);
+  await fs.writeFile(temporary, JSON.stringify(build), 'utf8');
+  await fs.rename(temporary, destination);
+}
+
 async function buildPublishPage(job, options = {}) {
+  const artifactDirectory = publishArtifactDirectory(job.id);
+  const stored = await loadStoredPublishBuild(artifactDirectory);
+  if (stored) return stored;
   const { site, bundle, npmLines, npmPrimary } = await preparePublishPage(job.site_id, {
     publishRevision: job.payload?.publish_revision,
     nodesRevision: job.payload?.nodes_revision,
@@ -76,21 +116,21 @@ async function buildPublishPage(job, options = {}) {
   });
   const npmVersion = site.npm_enabled ? npmVersionForJob(job.id) : '';
   if (site.npm_enabled) Object.assign(bundle, npmPackageFiles({ packageName: site.npm_package_name, version: npmVersion, githubRepo: site.github_repo, siteName: site.name }));
-  const outputRoot = path.join(__dirname, '..', '..', 'var', 'publish-pages');
-  const siteDirectory = path.join(outputRoot, site.slug);
-  await fs.rm(siteDirectory, { recursive: true, force: true });
-  await fs.mkdir(siteDirectory, { recursive: true });
+  await fs.rm(artifactDirectory, { recursive: true, force: true });
+  await fs.mkdir(artifactDirectory, { recursive: true });
   const names = Object.keys(bundle).filter(name => name !== 'publish-manifest.json');
   names.push('publish-manifest.json');
   for (const name of names) {
-    const destination = path.join(siteDirectory, name);
+    const destination = path.join(artifactDirectory, name);
     await fs.mkdir(path.dirname(destination), { recursive: true });
     const temporary = path.join(path.dirname(destination), `.${path.basename(name)}.${process.pid}.tmp`);
     await fs.writeFile(temporary, bundle[name], 'utf8');
     await fs.rename(temporary, destination);
   }
   const html = bundle['index.html'];
-  return { output: path.join(siteDirectory, 'index.html'), directory: siteDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled ? npmPageUrl(site.npm_package_name, 'latest', npmPrimary) : '', npm_cdn_lines: site.npm_enabled ? npmLines : [], npm_primary_cdn: site.npm_enabled ? npmPrimary : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
+  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled ? npmPageUrl(site.npm_package_name, 'latest', npmPrimary) : '', npm_cdn_lines: site.npm_enabled ? npmLines : [], npm_primary_cdn: site.npm_enabled ? npmPrimary : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
+  await saveStoredPublishBuild(artifactDirectory, build);
+  return build;
 }
 
 async function saveJobProgress(jobId, result, current = null, total = null) {
@@ -100,6 +140,12 @@ async function saveJobProgress(jobId, result, current = null, total = null) {
 
 async function runPublishWorkflow(job, dependencies = {}) {
   const previous = job.result && typeof job.result === 'object' ? job.result : {};
+  if (job.payload?.publish_revision !== undefined || job.payload?.nodes_revision !== undefined) {
+    const current = await one('SELECT publish_revision,nodes_revision FROM site_revisions WHERE site_id=$1', [job.site_id]);
+    if (!current || Number(job.payload.publish_revision) !== Number(current.publish_revision) || Number(job.payload.nodes_revision) !== Number(current.nodes_revision)) {
+      throw new PublishDeploymentService.DeploymentError('发布页配置或节点已变化，请创建新的发布任务', { retryable: false });
+    }
+  }
   const build = await buildPublishPage(job, { generatedAt: previous.build?.manifest?.generated_at });
   const expectedRevisions = {
     publish_revision: job.payload?.publish_revision ?? build.publish_revision,
@@ -226,4 +272,4 @@ function getWorkerStatus() {
   return { running: !stopped, busy: Boolean(activeRun), started_at: startedAt?.toISOString() || null, last_tick_at: lastTickAt?.toISOString() || null, last_error: lastWorkerError };
 }
 
-module.exports = { startJobWorker, stopJobWorker, getWorkerStatus, recoverStaleJobs, claimJob, publishEntries, preparePublishPage, renderPublishPreview, buildPublishPage, runPublishWorkflow, runJob };
+module.exports = { startJobWorker, stopJobWorker, getWorkerStatus, recoverStaleJobs, claimJob, publishEntries, preparePublishPage, renderPublishPreview, buildPublishPage, publishArtifactDirectory, loadStoredPublishBuild, runPublishWorkflow, runJob };
