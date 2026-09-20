@@ -112,6 +112,20 @@ test('任务重试只执行上次失败的平台', async () => {
   assert.equal(result.cloudflare.status, 'succeeded');
 });
 
+test('Notion 同步是独立发布通道，失败不会改写其他平台结果', async () => {
+  await assert.rejects(() => deployDualPlatform({ githubPagesUrl: 'https://owner.github.io/publish/', permanentUrl: 'https://go.example.com/', sha256: 'e'.repeat(64), notionSyncEnabled: true, notionPageId: '0123456789abcdef0123456789abcdef', notionPublicUrl: 'https://workspace.notion.site/publish', credentials: { notionToken: 'secret' } }, {}, {
+    deployGithub: async () => ({ commit_sha: 'commit' }),
+    deployCloudflare: async () => ({ deployment_url: 'https://deploy.pages.dev' }),
+    verify: async () => ({ verified: true }),
+    syncNotion: async () => { throw new Error('Notion 暂不可用'); }
+  }), error => {
+    assert.equal(error.progress.github.status, 'succeeded');
+    assert.equal(error.progress.cloudflare.status, 'succeeded');
+    assert.equal(error.progress.notion.status, 'failed');
+    return true;
+  });
+});
+
 test('远端 manifest 摘要一致才通过发布后校验', async () => {
   let calls = 0;
   const result = await verifyPublishedManifest('https://go.example.com/', 'expected', {

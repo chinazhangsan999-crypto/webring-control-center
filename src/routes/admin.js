@@ -12,6 +12,7 @@ const AlertService = require('../services/alertService');
 const JobAlertService = require('../services/jobAlertService');
 const PlatformSettingsService = require('../services/platformSettingsService');
 const { normalizePackageName, normalizeCdnLines, npmCdnUrls, npmPageUrl, resolveNpmPageEntryProvider } = require('../services/npmPublishService');
+const { normalizePageId, normalizePublicUrl, verifyNotionToken } = require('../services/notionPublishService');
 const { badRequest, notFound, conflict } = require('../lib/errors');
 
 const router = express.Router();
@@ -90,7 +91,8 @@ router.post('/platform-settings/test/:provider', asyncRoute(async (req, res) => 
     const response = await fetch(`${runtime.npm.registry}/-/ping`, { signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw badRequest(`npm Registry 连接失败：HTTP ${response.status}`);
     result = { message: 'npm Registry 可访问，发布认证使用 GitHub OIDC' };
-  } else if (provider === 'telegram') result = await testTelegram({ telegramToken: runtime.secrets.telegram_token, telegramChatId: runtime.alerts.telegram_chat_id });
+  } else if (provider === 'notion') result = await verifyNotionToken({ token: runtime.secrets.notion_token });
+  else if (provider === 'telegram') result = await testTelegram({ telegramToken: runtime.secrets.telegram_token, telegramChatId: runtime.alerts.telegram_chat_id });
   else if (provider === 'bark') result = await testBark({ barkUrl: runtime.secrets.bark_url });
   else throw badRequest('未知平台');
   await ControlService.audit(actor(req), 'platform-settings.test', 'settings', provider, { success: true }, req.ip);
@@ -289,7 +291,7 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
   if(!permanent||!github)throw badRequest('请同时填写自定义永久发布域名和 GitHub Pages 地址');
   if(new URL(permanent).hostname.toLowerCase().endsWith('.pages.dev'))throw badRequest('自定义永久发布域名不能使用 pages.dev 原生地址');
   if(!new URL(github).hostname.toLowerCase().endsWith('.github.io'))throw badRequest('GitHub Pages 地址必须使用 github.io 原生地址');
-  const repo=String(req.body?.github_repo||'').trim().slice(0,200); const cf=String(req.body?.cloudflare_project||'').trim().slice(0,120); const email=String(req.body?.contact_email||'').trim().slice(0,200); const payload=ControlService.parsePublishPayload(req.body?.payload); const npmEnabled=req.body?.npm_enabled===true; const npmMode=req.body?.npm_cdn_mode==='custom'?'custom':'inherit'; let npmPackage=''; let npmLines=[]; let npmPrimary='';
+  const repo=String(req.body?.github_repo||'').trim().slice(0,200); const cf=String(req.body?.cloudflare_project||'').trim().slice(0,120); const email=String(req.body?.contact_email||'').trim().slice(0,200); const payload=ControlService.parsePublishPayload(req.body?.payload); const npmEnabled=req.body?.npm_enabled===true; const npmMode=req.body?.npm_cdn_mode==='custom'?'custom':'inherit'; const notionEnabled=req.body?.notion_enabled===true; const notionSyncEnabled=req.body?.notion_sync_enabled===true; const notionPageId=notionEnabled?normalizePageId(req.body?.notion_page_id):''; const notionPublicUrl=notionEnabled?normalizePublicUrl(req.body?.notion_public_url):''; let npmPackage=''; let npmLines=[]; let npmPrimary='';
   if(repo&&!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo))throw badRequest('GitHub 仓库请使用 owner/repository 格式');
   if(cf&&!/^[a-z0-9][a-z0-9-]{0,62}$/.test(cf))throw badRequest('Cloudflare 项目名仅支持小写字母、数字和连字符');
   if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw badRequest('防失联邮箱格式不正确');
@@ -297,11 +299,15 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
   try { npmLines=npmMode==='custom'?normalizeCdnLines(req.body?.npm_cdn_lines):[]; npmPrimary=npmMode==='custom'?String(req.body?.npm_primary_cdn||'').trim():''; if(npmMode==='custom'&&!npmLines.includes(npmPrimary))npmPrimary=''; } catch(error) { throw badRequest(error.message); }
   if(npmEnabled&&!npmPackage)throw badRequest('启用 npm 发布时必须填写 npm 包名');
   if(npmEnabled&&npmMode==='custom'&&!resolveNpmPageEntryProvider(npmLines,npmPrimary))throw badRequest('自定义 npm 线路至少选择 UNPKG 或 esm.sh 作为网页入口');
+  if(notionEnabled&&!notionPublicUrl)throw badRequest('启用 Notion 发布页时，请填写有效的 Notion 公开地址');
+  if(notionSyncEnabled&&!notionEnabled)throw badRequest('启用自动同步前，请先启用 Notion 发布页');
+  if(notionSyncEnabled&&!notionPageId)throw badRequest('启用 Notion 自动同步时，请填写 Notion 页面 ID');
+  if(notionSyncEnabled){const settings=await PlatformSettingsService.safeSettings();if(!settings.notion.enabled||!settings.credentials.notion_token?.configured)throw badRequest('请先在平台与告警设置中启用 Notion 自动同步并保存 Integration Token');}
   const row = await transaction(async client => {
-    const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,cloudflare_project=$5,contact_email=$6,payload=$7::jsonb,npm_enabled=$8,npm_package_name=$9,npm_cdn_mode=$10,npm_cdn_lines=$11::jsonb,npm_primary_cdn=$12,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github,repo,cf,email,JSON.stringify(payload),npmEnabled,npmPackage,npmMode,JSON.stringify(npmLines),npmPrimary])).rows[0];
+    const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,cloudflare_project=$5,contact_email=$6,payload=$7::jsonb,npm_enabled=$8,npm_package_name=$9,npm_cdn_mode=$10,npm_cdn_lines=$11::jsonb,npm_primary_cdn=$12,notion_enabled=$13,notion_sync_enabled=$14,notion_page_id=$15,notion_public_url=$16,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github,repo,cf,email,JSON.stringify(payload),npmEnabled,npmPackage,npmMode,JSON.stringify(npmLines),npmPrimary,notionEnabled,notionSyncEnabled,notionPageId,notionPublicUrl])).rows[0];
     if(!updated)throw notFound('站点不存在');
     await ControlService.bumpRevisions('publish',[siteId],client);
-    await ControlService.audit(actor(req),'publish.update','site',siteId,{github_repo:repo,cloudflare_project:cf,npm_enabled:npmEnabled,npm_package_name:npmPackage,npm_cdn_mode:npmMode,npm_cdn_lines:npmLines,npm_primary_cdn:npmPrimary},req.ip,client);
+    await ControlService.audit(actor(req),'publish.update','site',siteId,{github_repo:repo,cloudflare_project:cf,npm_enabled:npmEnabled,npm_package_name:npmPackage,npm_cdn_mode:npmMode,npm_cdn_lines:npmLines,npm_primary_cdn:npmPrimary,notion_enabled:notionEnabled,notion_sync_enabled:notionSyncEnabled,notion_page_id:notionPageId,notion_public_url:notionPublicUrl},req.ip,client);
     return updated;
   });
   return ok(res,row,'发布页配置已更新');
@@ -309,13 +315,14 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
 router.post('/sites/:id/publish/jobs', asyncRoute(async(req,res)=>{
   const siteId=numericId(req.params.id);
   const result=await transaction(async client=>{
-    const config=(await client.query(`SELECT p.permanent_url,p.github_pages_url,p.github_repo,p.cloudflare_project,p.npm_enabled,p.npm_package_name,r.publish_revision,r.nodes_revision
+    const config=(await client.query(`SELECT p.permanent_url,p.github_pages_url,p.github_repo,p.cloudflare_project,p.npm_enabled,p.npm_package_name,p.notion_sync_enabled,p.notion_page_id,p.notion_public_url,r.publish_revision,r.nodes_revision
       FROM publish_pages p JOIN site_revisions r ON r.site_id=p.site_id WHERE p.site_id=$1`,[siteId])).rows[0];
     if(!config)throw notFound('站点不存在');
     if(!config.permanent_url||!config.github_pages_url)throw badRequest('请先配置自定义永久发布域名和 GitHub Pages 地址');
     if(!config.github_repo||!config.cloudflare_project)throw badRequest('请先配置 GitHub 仓库和 Cloudflare 项目');
     if(config.npm_enabled&&!config.npm_package_name)throw badRequest('请先配置 npm 包名');
-    const progressTotal=config.npm_enabled?4:3;
+    if(config.notion_sync_enabled&&(!config.notion_page_id||!config.notion_public_url))throw badRequest('请先配置 Notion 页面 ID 和公开地址');
+    const progressTotal=3+(config.npm_enabled?1:0)+(config.notion_sync_enabled?1:0);
     const inserted=await client.query(`INSERT INTO jobs(type,site_id,payload,progress_total) VALUES('publish.deploy',$1,$2::jsonb,$3)
       ON CONFLICT (type,site_id) WHERE type='publish.deploy' AND status IN ('queued','running') DO NOTHING RETURNING *`,[siteId,JSON.stringify({requested_by:req.admin.id,publish_revision:config.publish_revision,nodes_revision:config.nodes_revision}),progressTotal]);
     const created=Boolean(inserted.rows[0]);
@@ -374,7 +381,7 @@ router.post('/jobs/:id/retry', asyncRoute(async(req,res)=>{
         nextPayload={...nextPayload,publish_revision:revision.publish_revision,nodes_revision:revision.nodes_revision};nextResult={};
       }
     }
-    const updated=(await client.query(`UPDATE jobs SET status='queued',attempts=0,available_at=NOW(),started_at=NULL,finished_at=NULL,last_error='',error_code='',heartbeat_at=NULL,progress_current=0,progress_total=CASE WHEN type='publish.deploy' THEN CASE WHEN COALESCE((SELECT npm_enabled FROM publish_pages WHERE site_id=jobs.site_id),FALSE) THEN 4 ELSE 3 END ELSE 1 END,result=$2::jsonb,payload=$3::jsonb WHERE id=$1 RETURNING *`,[id,JSON.stringify(nextResult),JSON.stringify(nextPayload)])).rows[0];
+    const updated=(await client.query(`UPDATE jobs SET status='queued',attempts=0,available_at=NOW(),started_at=NULL,finished_at=NULL,last_error='',error_code='',heartbeat_at=NULL,progress_current=0,progress_total=CASE WHEN type='publish.deploy' THEN 3 + CASE WHEN COALESCE((SELECT npm_enabled FROM publish_pages WHERE site_id=jobs.site_id),FALSE) THEN 1 ELSE 0 END + CASE WHEN COALESCE((SELECT notion_sync_enabled FROM publish_pages WHERE site_id=jobs.site_id),FALSE) THEN 1 ELSE 0 END ELSE 1 END,result=$2::jsonb,payload=$3::jsonb WHERE id=$1 RETURNING *`,[id,JSON.stringify(nextResult),JSON.stringify(nextPayload)])).rows[0];
     await ControlService.audit(actor(req),'job.retry','job',id,{type:updated.type,site_id:updated.site_id},req.ip,client);
     return updated;
   });

@@ -7,6 +7,7 @@ const { execFile } = require('node:child_process');
 
 const execFileAsync = promisify(execFile);
 const { npmPageUrl, npmCdnUrls, resolveNpmPageEntryProvider } = require('./npmPublishService');
+const { syncNotionPage } = require('./notionPublishService');
 const GITHUB_API = 'https://api.github.com';
 const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 const GITHUB_API_VERSION = '2026-03-10';
@@ -28,7 +29,8 @@ function deploymentCredentials(env = process.env) {
     githubBranch: String(env.PUBLISH_GITHUB_BRANCH || 'gh-pages').trim(),
     cloudflareToken: String(env.PUBLISH_CLOUDFLARE_API_TOKEN || '').trim(),
     cloudflareAccountId: String(env.PUBLISH_CLOUDFLARE_ACCOUNT_ID || '').trim(),
-    cloudflareBranch: String(env.PUBLISH_CLOUDFLARE_BRANCH || 'main').trim()
+    cloudflareBranch: String(env.PUBLISH_CLOUDFLARE_BRANCH || 'main').trim(),
+    notionToken: String(env.NOTION_INTEGRATION_TOKEN || '').trim()
   };
 }
 
@@ -349,7 +351,8 @@ async function deployDualPlatform(input, previous = {}, dependencies = {}) {
   const progress = {
     github: previous.github?.status === 'succeeded' ? previous.github : { status: 'running', started_at: startedAt },
     cloudflare: previous.cloudflare?.status === 'succeeded' ? previous.cloudflare : { status: 'running', started_at: startedAt },
-    ...(input.npmPackageName ? { npm: previous.npm?.status === 'succeeded' ? previous.npm : { status: 'pending' } } : {})
+    ...(input.npmPackageName ? { npm: previous.npm?.status === 'succeeded' ? previous.npm : { status: 'pending' } } : {}),
+    ...(input.notionSyncEnabled ? { notion: previous.notion?.status === 'succeeded' ? previous.notion : { status: 'pending' } } : {})
   };
   await dependencies.onProgress?.(progress);
   const tasks = [];
@@ -385,6 +388,29 @@ async function deployDualPlatform(input, previous = {}, dependencies = {}) {
       }
       await dependencies.onProgress?.(progress);
     }
+  }
+  if (input.notionSyncEnabled && progress.notion.status !== 'succeeded') {
+    progress.notion = { status: 'running', started_at: new Date().toISOString() };
+    await dependencies.onProgress?.(progress);
+    try {
+      const synced = await (dependencies.syncNotion || syncNotionPage)({
+        token: input.credentials.notionToken,
+        pageId: input.notionPageId,
+        publicUrl: input.notionPublicUrl,
+        previousBlockId: input.notionSyncBlockId,
+        siteName: input.notionSiteName,
+        permanentUrl: input.permanentUrl,
+        githubPagesUrl: input.githubPagesUrl,
+        npmPageUrl: input.npmPageUrl,
+        entries: input.notionEntries,
+        generatedAt: input.generatedAt,
+        sha256: input.sha256
+      }, dependencies);
+      progress.notion = { status: 'succeeded', ...synced, finished_at: new Date().toISOString() };
+    } catch (error) {
+      progress.notion = { status: 'failed', error: String(error.message || error).slice(0, 500), retryable: error.retryable !== false, finished_at: new Date().toISOString() };
+    }
+    await dependencies.onProgress?.(progress);
   }
   const failures = Object.entries(progress).filter(([, result]) => result.status !== 'succeeded');
   if (failures.length) {

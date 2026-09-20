@@ -61,8 +61,8 @@ async function preparePublishPage(siteId, options = {}) {
   const npmPrimary = site.npm_cdn_mode === 'custom' ? site.npm_primary_cdn : settings.npm.primary;
   const npmUrls = site.npm_enabled ? npmCdnUrls(site.npm_package_name, 'latest', npmLines, npmPrimary) : [];
   const npmUrl = npmUrls.find(item => item.entry_primary)?.url || '';
-  const bundle = renderPublishBundle({ siteName: site.name, siteUrl: site.public_url, logoUrl: site.payload?.logo_url, headline: site.payload?.page_title, description: site.payload?.description, announcement: site.payload?.announcement, permanentUrl: site.permanent_url, githubPagesUrl: site.github_pages_url, npmPageUrl: npmUrl, npmPageUrls: npmUrls, contactEmail: site.contact_email, entries, generatedAt: options.generatedAt });
-  return { site, bundle, npmLines, npmPrimary, npmUrls };
+  const bundle = renderPublishBundle({ siteName: site.name, siteUrl: site.public_url, logoUrl: site.payload?.logo_url, headline: site.payload?.page_title, description: site.payload?.description, announcement: site.payload?.announcement, permanentUrl: site.permanent_url, githubPagesUrl: site.github_pages_url, notionPublicUrl: site.notion_enabled ? site.notion_public_url : '', npmPageUrl: npmUrl, npmPageUrls: npmUrls, contactEmail: site.contact_email, entries, generatedAt: options.generatedAt });
+  return { site, bundle, entries, npmLines, npmPrimary, npmUrls };
 }
 
 async function renderPublishPreview(siteId) {
@@ -109,7 +109,7 @@ async function buildPublishPage(job, options = {}) {
   const artifactDirectory = publishArtifactDirectory(job.id);
   const stored = await loadStoredPublishBuild(artifactDirectory);
   if (stored) return stored;
-  const { site, bundle, npmLines, npmPrimary } = await preparePublishPage(job.site_id, {
+  const { site, bundle, entries, npmLines, npmPrimary } = await preparePublishPage(job.site_id, {
     publishRevision: job.payload?.publish_revision,
     nodesRevision: job.payload?.nodes_revision,
     generatedAt: options.generatedAt
@@ -129,7 +129,7 @@ async function buildPublishPage(job, options = {}) {
   }
   const html = bundle['index.html'];
   const npmEntryProvider = resolveNpmPageEntryProvider(npmLines, npmPrimary);
-  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled && npmEntryProvider ? npmPageUrl(site.npm_package_name, 'latest', npmEntryProvider) : '', npm_cdn_lines: site.npm_enabled ? npmLines : [], npm_primary_cdn: site.npm_enabled ? npmPrimary : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
+  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, notion_enabled: site.notion_enabled, notion_sync_enabled: site.notion_sync_enabled, notion_page_id: site.notion_page_id, notion_public_url: site.notion_public_url, notion_sync_block_id: site.notion_sync_block_id, notion_site_name: site.name, notion_entries: entries, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled && npmEntryProvider ? npmPageUrl(site.npm_package_name, 'latest', npmEntryProvider) : '', npm_cdn_lines: site.npm_enabled ? npmLines : [], npm_primary_cdn: site.npm_enabled ? npmPrimary : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
   await saveStoredPublishBuild(artifactDirectory, build);
   return build;
 }
@@ -137,6 +137,11 @@ async function buildPublishPage(job, options = {}) {
 async function saveJobProgress(jobId, result, current = null, total = null) {
   await query(`UPDATE jobs SET result=$2::jsonb,heartbeat_at=NOW(),
     progress_current=COALESCE($3,progress_current),progress_total=COALESCE($4,progress_total) WHERE id=$1`, [jobId, JSON.stringify(result), current, total]);
+}
+
+async function saveNotionState(siteId, build, notion) {
+  if (!build.notion_enabled || !notion) return;
+  await query(`UPDATE publish_pages SET notion_sync_block_id=$2,notion_last_synced_at=CASE WHEN $3='succeeded' THEN NOW() ELSE notion_last_synced_at END,notion_last_error=$4,updated_at=NOW() WHERE site_id=$1`, [siteId, notion.sync_block_id || build.notion_sync_block_id || '', notion.status || 'manual', notion.status === 'failed' ? (notion.error || 'Notion 同步失败') : '']);
 }
 
 async function runPublishWorkflow(job, dependencies = {}) {
@@ -157,7 +162,7 @@ async function runPublishWorkflow(job, dependencies = {}) {
     await query('UPDATE jobs SET payload=$2::jsonb WHERE id=$1', [job.id, JSON.stringify(job.payload)]);
   }
   const progress = { ...previous, build };
-  const progressTotal = build.npm_package_name ? 4 : 3;
+  const progressTotal = 3 + (build.npm_package_name ? 1 : 0) + (build.notion_sync_enabled ? 1 : 0);
   await saveJobProgress(job.id, progress, 1, progressTotal);
   try {
     const platforms = await PublishDeploymentService.deployDualPlatform({
@@ -172,6 +177,14 @@ async function runPublishWorkflow(job, dependencies = {}) {
       permanentUrl: build.permanent_url,
       npmCdnLines: build.npm_cdn_lines,
       npmPrimaryCdn: build.npm_primary_cdn,
+      notionSyncEnabled: build.notion_sync_enabled,
+      notionPageId: build.notion_page_id,
+      notionPublicUrl: build.notion_public_url,
+      notionSyncBlockId: build.notion_sync_block_id,
+      notionSiteName: build.notion_site_name,
+      notionEntries: build.notion_entries,
+      npmPageUrl: build.npm_page_url,
+      generatedAt: build.manifest.generated_at,
       credentials: await PlatformSettingsService.deploymentCredentials()
     }, previous.platforms || {}, {
       ...dependencies,
@@ -182,6 +195,7 @@ async function runPublishWorkflow(job, dependencies = {}) {
       throw new PublishDeploymentService.DeploymentError('发布期间站点配置发生变化，请创建新任务发布最新版本', { retryable: false, progress: platforms });
     }
     const cdns = platforms.npm?.cdns || [];
+    const notion = platforms.notion;
     if (cdns.length && build.npm_version) {
       await transaction(async client => {
         for (const item of cdns) {
@@ -191,8 +205,10 @@ async function runPublishWorkflow(job, dependencies = {}) {
         }
       });
     }
+    await saveNotionState(job.site_id, build, notion);
     return { ...progress, platforms };
   } catch (error) {
+    await saveNotionState(job.site_id, build, error.progress?.notion).catch(persistError => console.error('保存 Notion 同步状态失败', persistError));
     error.progress = { ...progress, platforms: error.progress || {} };
     throw error;
   }

@@ -65,7 +65,8 @@ test('永久发布页生成独立静态包并支持 npm 第三发布地址', () 
   assert.match(adminRoutes, /parsePublishPayload/);
   assert.match(worker, /renderPublishBundle/);
   assert.match(worker, /site\.public_url/);
-  assert.match(adminApp, /发布完整页面到三平台/);
+  assert.match(adminApp, /发布完整页面到多平台/);
+  assert.match(adminApp, /Notion 公开发布页/);
   assert.match(adminApp, /npm 完整发布页/);
   assert.match(adminApp, /主网页入口/);
   assert.match(adminApp, /包分发/);

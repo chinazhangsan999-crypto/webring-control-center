@@ -17,6 +17,13 @@ test('发布页只展示可渲染的 npm 网页入口，包分发线路不提供
   assert.doesNotMatch(html, /pages\.dev/);
 });
 
+test('发布页可展示 Notion 公开入口，并将地址写入清单', () => {
+  const bundle = renderPublishBundle({ siteName: '测试站', permanentUrl: 'https://publish.example.com/', githubPagesUrl: 'https://owner.github.io/site/', notionPublicUrl: 'https://workspace.notion.site/status-page' });
+  assert.match(bundle['index.html'], /Notion 公告发布页/);
+  assert.match(bundle['index.html'], /https:\/\/workspace\.notion\.site\/status-page/);
+  assert.equal(JSON.parse(bundle['publish-manifest.json']).addresses.notion, 'https://workspace.notion.site/status-page');
+});
+
 test('发布页转义站点提供的文本', () => {
   const html = renderPublishPage({ siteName: '<script>alert(1)</script>', announcement: '<img src=x onerror=alert(2)>', logoUrl: 'javascript:alert(3)', permanentUrl: 'https://example.com', githubPagesUrl: 'https://owner.github.io/repo/' });
   assert.doesNotMatch(html, /<script>alert/);

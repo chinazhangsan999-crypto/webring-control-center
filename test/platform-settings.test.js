@@ -21,6 +21,7 @@ test('npm 默认线路只接受四个允许的提供方，并确保主线路属�
   assert.equal(settings.npm.primary, 'esm');
   assert.equal(normalizeSettings({ npm: { lines: ['jsdelivr', 'unpkg'], primary: 'jsdelivr' } }).npm.primary, 'unpkg');
   assert.equal(normalizeSettings({ alerts: { telegram: { chat_id: '12345' } } }).alerts.telegram_chat_id, '12345');
+  assert.equal(normalizeSettings({ notion: { enabled: true } }).notion.enabled, true);
 });
 
 test('npm 发布页保留四条分发线路，但只为可渲染线路指定网页入口', () => {

@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const { one, transaction } = require('../db');
 const { SETTINGS_ENCRYPTION_KEY } = require('../config');
 
-const SECRET_NAMES = new Set(['github_token', 'cloudflare_token', 'telegram_token', 'bark_url']);
+const SECRET_NAMES = new Set(['github_token', 'cloudflare_token', 'notion_token', 'telegram_token', 'bark_url']);
 const DEFAULT_NPM_LINES = ['jsdelivr', 'unpkg'];
 const NPM_PAGE_ENTRY_PROVIDERS = new Set(['unpkg', 'esm']);
 
@@ -48,12 +48,13 @@ function defaults(env = process.env) {
     github: { enabled: true, username: '', branch: text(env.PUBLISH_GITHUB_BRANCH || 'gh-pages', 80) || 'gh-pages' },
     cloudflare: { enabled: true, account_id: text(env.PUBLISH_CLOUDFLARE_ACCOUNT_ID, 160), branch: text(env.PUBLISH_CLOUDFLARE_BRANCH || 'main', 80) || 'main' },
     npm: { enabled: true, username: '', registry: 'https://registry.npmjs.org', lines: DEFAULT_NPM_LINES, primary: 'unpkg' },
+    notion: { enabled: false },
     alerts: { site_name: text(env.ALERT_SITE_NAME || '星环总控', 100) || '星环总控', telegram_enabled: Boolean(env.ALERT_TELEGRAM_BOT_TOKEN && env.ALERT_TELEGRAM_CHAT_ID), telegram_chat_id: text(env.ALERT_TELEGRAM_CHAT_ID, 100), bark_enabled: Boolean(env.ALERT_BARK_URL), timeout_ms: Number(env.ALERT_TIMEOUT_MS || 8000), retry_delay_ms: Number(env.ALERT_RETRY_DELAY_MS || 1500) }
   };
 }
 
 function normalizeSettings(input = {}, fallback = defaults()) {
-  const github = input.github || {}, cloudflare = input.cloudflare || {}, npm = input.npm || {}, alerts = input.alerts || {};
+  const github = input.github || {}, cloudflare = input.cloudflare || {}, npm = input.npm || {}, notion = input.notion || {}, alerts = input.alerts || {};
   const lines = normalizeLines(npm.lines, fallback.npm.lines);
   const pageEntries = lines.filter(item => NPM_PAGE_ENTRY_PROVIDERS.has(item));
   const requestedPrimary = text(npm.primary, 30);
@@ -65,6 +66,7 @@ function normalizeSettings(input = {}, fallback = defaults()) {
     github: { enabled: bool(github.enabled, fallback.github.enabled), username: text(github.username, 120), branch: text(github.branch || fallback.github.branch, 80) || 'gh-pages' },
     cloudflare: { enabled: bool(cloudflare.enabled, fallback.cloudflare.enabled), account_id: text(cloudflare.account_id || fallback.cloudflare.account_id, 160), branch: text(cloudflare.branch || fallback.cloudflare.branch, 80) || 'main' },
     npm: { enabled: bool(npm.enabled, fallback.npm.enabled), username: text(npm.username, 120), registry: 'https://registry.npmjs.org', lines, primary },
+    notion: { enabled: bool(notion.enabled, fallback.notion?.enabled || false) },
     alerts: { site_name: text(alerts.site_name || fallback.alerts.site_name, 100) || '星环总控', telegram_enabled: bool(alerts.telegram_enabled, fallback.alerts.telegram_enabled), telegram_chat_id: text(alerts.telegram_chat_id || alerts.telegram?.chat_id || fallback.alerts.telegram_chat_id, 100), bark_enabled: bool(alerts.bark_enabled, fallback.alerts.bark_enabled), timeout_ms: Math.min(30000, Math.max(1000, integer(alerts.timeout_ms, fallback.alerts.timeout_ms))), retry_delay_ms: Math.min(10000, Math.max(0, integer(alerts.retry_delay_ms, fallback.alerts.retry_delay_ms))) }
   };
 }
@@ -79,6 +81,7 @@ async function safeSettings() {
   return { ...settings, alerts: { ...settings.alerts, telegram: { chat_id: settings.alerts.telegram_chat_id } }, encryption_ready: Boolean(encryptionKey()), credentials: {
     github_token: { configured: Boolean(hints.github_token || process.env.PUBLISH_GITHUB_TOKEN), hint: hints.github_token || secretHint(process.env.PUBLISH_GITHUB_TOKEN) },
     cloudflare_token: { configured: Boolean(hints.cloudflare_token || process.env.PUBLISH_CLOUDFLARE_API_TOKEN), hint: hints.cloudflare_token || secretHint(process.env.PUBLISH_CLOUDFLARE_API_TOKEN) },
+    notion_token: { configured: Boolean(hints.notion_token || process.env.NOTION_INTEGRATION_TOKEN), hint: hints.notion_token || secretHint(process.env.NOTION_INTEGRATION_TOKEN) },
     telegram_token: { configured: Boolean(hints.telegram_token || process.env.ALERT_TELEGRAM_BOT_TOKEN), hint: hints.telegram_token || secretHint(process.env.ALERT_TELEGRAM_BOT_TOKEN) },
     bark_url: { configured: Boolean(hints.bark_url || process.env.ALERT_BARK_URL), hint: hints.bark_url || secretHint(process.env.ALERT_BARK_URL) }
   }};
@@ -90,6 +93,7 @@ async function decryptedSecrets() {
   return {
     github_token: values.github_token || text(process.env.PUBLISH_GITHUB_TOKEN),
     cloudflare_token: values.cloudflare_token || text(process.env.PUBLISH_CLOUDFLARE_API_TOKEN),
+    notion_token: values.notion_token || text(process.env.NOTION_INTEGRATION_TOKEN),
     telegram_token: values.telegram_token || text(process.env.ALERT_TELEGRAM_BOT_TOKEN),
     bark_url: values.bark_url || text(process.env.ALERT_BARK_URL)
   };
@@ -116,7 +120,7 @@ async function save(payload = {}) {
 
 async function deploymentCredentials() {
   const runtime = await runtimeSettings();
-  return { githubToken: runtime.secrets.github_token, githubBranch: runtime.github.branch, cloudflareToken: runtime.secrets.cloudflare_token, cloudflareAccountId: runtime.cloudflare.account_id, cloudflareBranch: runtime.cloudflare.branch };
+  return { githubToken: runtime.secrets.github_token, githubBranch: runtime.github.branch, cloudflareToken: runtime.secrets.cloudflare_token, cloudflareAccountId: runtime.cloudflare.account_id, cloudflareBranch: runtime.cloudflare.branch, notionToken: runtime.secrets.notion_token, notionEnabled: runtime.notion.enabled };
 }
 
 async function alertRuntimeConfig() {

@@ -20,7 +20,7 @@ function retryDelaySeconds(attempts) {
 
 function completedPublishSteps(platforms = {}) {
   const finished = ['succeeded', 'failed'];
-  return 1 + ['cloudflare', 'github', 'npm'].filter(name => finished.includes(platforms[name]?.status)).length;
+  return 1 + ['cloudflare', 'github', 'npm', 'notion'].filter(name => finished.includes(platforms[name]?.status)).length;
 }
 
 module.exports = { classifyJobError, retryDelaySeconds, completedPublishSteps };
