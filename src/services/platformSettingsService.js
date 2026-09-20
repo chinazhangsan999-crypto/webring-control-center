@@ -6,6 +6,7 @@ const { SETTINGS_ENCRYPTION_KEY } = require('../config');
 
 const SECRET_NAMES = new Set(['github_token', 'cloudflare_token', 'telegram_token', 'bark_url']);
 const DEFAULT_NPM_LINES = ['jsdelivr', 'unpkg'];
+const NPM_PAGE_ENTRY_PROVIDERS = new Set(['unpkg', 'esm']);
 
 function text(value, max = 300) { return String(value || '').trim().slice(0, max); }
 function bool(value, fallback) { return value === undefined ? fallback : value === true; }
@@ -46,7 +47,7 @@ function defaults(env = process.env) {
   return {
     github: { enabled: true, username: '', branch: text(env.PUBLISH_GITHUB_BRANCH || 'gh-pages', 80) || 'gh-pages' },
     cloudflare: { enabled: true, account_id: text(env.PUBLISH_CLOUDFLARE_ACCOUNT_ID, 160), branch: text(env.PUBLISH_CLOUDFLARE_BRANCH || 'main', 80) || 'main' },
-    npm: { enabled: true, username: '', registry: 'https://registry.npmjs.org', lines: DEFAULT_NPM_LINES, primary: 'jsdelivr' },
+    npm: { enabled: true, username: '', registry: 'https://registry.npmjs.org', lines: DEFAULT_NPM_LINES, primary: 'unpkg' },
     alerts: { site_name: text(env.ALERT_SITE_NAME || '星环总控', 100) || '星环总控', telegram_enabled: Boolean(env.ALERT_TELEGRAM_BOT_TOKEN && env.ALERT_TELEGRAM_CHAT_ID), telegram_chat_id: text(env.ALERT_TELEGRAM_CHAT_ID, 100), bark_enabled: Boolean(env.ALERT_BARK_URL), timeout_ms: Number(env.ALERT_TIMEOUT_MS || 8000), retry_delay_ms: Number(env.ALERT_RETRY_DELAY_MS || 1500) }
   };
 }
@@ -54,7 +55,11 @@ function defaults(env = process.env) {
 function normalizeSettings(input = {}, fallback = defaults()) {
   const github = input.github || {}, cloudflare = input.cloudflare || {}, npm = input.npm || {}, alerts = input.alerts || {};
   const lines = normalizeLines(npm.lines, fallback.npm.lines);
-  const primary = lines.includes(text(npm.primary, 30)) ? text(npm.primary, 30) : (lines.includes(fallback.npm.primary) ? fallback.npm.primary : lines[0]);
+  const pageEntries = lines.filter(item => NPM_PAGE_ENTRY_PROVIDERS.has(item));
+  const requestedPrimary = text(npm.primary, 30);
+  const primary = pageEntries.includes(requestedPrimary)
+    ? requestedPrimary
+    : (pageEntries.includes(fallback.npm.primary) ? fallback.npm.primary : (pageEntries[0] || lines[0]));
   const integer = (value, safe) => Number.isSafeInteger(Number(value)) && Number(value) >= 0 ? Number(value) : safe;
   return {
     github: { enabled: bool(github.enabled, fallback.github.enabled), username: text(github.username, 120), branch: text(github.branch || fallback.github.branch, 80) || 'gh-pages' },

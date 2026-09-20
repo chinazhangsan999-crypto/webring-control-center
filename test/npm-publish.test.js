@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizePackageName, npmVersionForJob, npmPageUrl, npmPackageFiles } = require('../src/services/npmPublishService');
-const { deployDualPlatform, deployNpmPackage } = require('../src/services/publishDeploymentService');
+const { deployDualPlatform, deployNpmPackage, verifyNpmCdnLine } = require('../src/services/publishDeploymentService');
 
 test('npm 包名支持安全的非 scoped 名称并生成稳定地址', () => {
   assert.equal(normalizePackageName('Link-Status-Page'), 'link-status-page');
@@ -70,4 +70,15 @@ test('npm 精确版本校验成功后，latest 传播延迟不会阻塞发布结
   assert.equal(result.stable_status, 'syncing');
   assert.equal(result.exact_url, 'https://unpkg.com/link-status-page@0.0.99/index.html');
   assert.ok(calls.some(url => url.includes('@latest')));
+});
+
+test('npm 包分发线路不会被误判为网页入口，npmmirror 不参与网页校验', async () => {
+  const npmmirror = await verifyNpmCdnLine({ provider: 'npmmirror', label: '中国大陆 npm 镜像', page_entry: false, url: 'https://registry.npmmirror.com/link-status-page/0.0.99/files/index.html' }, 'a'.repeat(64));
+  assert.equal(npmmirror.status, 'package_mirror');
+
+  const jsdelivr = await verifyNpmCdnLine({ provider: 'jsdelivr', label: '静态文件分发', page_entry: false, url: 'https://cdn.jsdelivr.net/npm/link-status-page@0.0.99/index.html' }, 'a'.repeat(64), {
+    verify: async () => ({ manifest_url: 'https://cdn.jsdelivr.net/npm/link-status-page@0.0.99/publish-manifest.json' }),
+    fetchImpl: async () => new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/plain' } })
+  });
+  assert.equal(jsdelivr.status, 'package_available');
 });

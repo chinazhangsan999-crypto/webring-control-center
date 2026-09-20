@@ -11,7 +11,7 @@ const JobWorker = require('../services/jobWorker');
 const AlertService = require('../services/alertService');
 const JobAlertService = require('../services/jobAlertService');
 const PlatformSettingsService = require('../services/platformSettingsService');
-const { normalizePackageName, normalizeCdnLines, npmCdnUrls, npmPageUrl } = require('../services/npmPublishService');
+const { normalizePackageName, normalizeCdnLines, npmCdnUrls, npmPageUrl, resolveNpmPageEntryProvider } = require('../services/npmPublishService');
 const { badRequest, notFound, conflict } = require('../lib/errors');
 
 const router = express.Router();
@@ -72,6 +72,10 @@ router.post('/security/revoke-sessions', asyncRoute(async (req, res) => ok(res,
 
 router.get('/platform-settings', asyncRoute(async (_req, res) => ok(res, await PlatformSettingsService.safeSettings())));
 router.put('/platform-settings', asyncRoute(async (req, res) => {
+  const proposed = PlatformSettingsService.normalizeSettings(req.body || {}, await PlatformSettingsService.safeSettings());
+  if (proposed.npm.enabled && !resolveNpmPageEntryProvider(proposed.npm.lines, proposed.npm.primary)) {
+    throw badRequest('启用 npm 发布时，至少选择 UNPKG 或 esm.sh 作为网页入口线路');
+  }
   const saved = await PlatformSettingsService.save(req.body || {});
   await ControlService.audit(actor(req), 'platform-settings.update', 'settings', 'platforms', { sections: Object.keys(req.body || {}).filter(key => key !== 'secrets'), secret_keys: Object.keys(req.body?.secrets || {}).filter(key => req.body.secrets[key] !== undefined).sort() }, req.ip);
   return ok(res, saved, '平台与告警设置已保存');
@@ -259,7 +263,7 @@ router.get('/sites/:id/publish', asyncRoute(async(req,res)=>{
     const lines=row.npm_cdn_mode==='custom'?row.npm_cdn_lines:settings.npm.lines;
     const primary=row.npm_cdn_mode==='custom'?row.npm_primary_cdn:settings.npm.primary;
     row.npm_page_urls=npmCdnUrls(row.npm_package_name,'latest',lines,primary);
-    row.npm_page_url=row.npm_page_urls.find(item=>item.primary)?.url||npmPageUrl(row.npm_package_name);
+    row.npm_page_url=row.npm_page_urls.find(item=>item.entry_primary)?.url||npmPageUrl(row.npm_package_name);
     row.npm_effective_lines=lines; row.npm_effective_primary=primary;
     row.npm_cdn_checks=(await query(`SELECT provider,status,page_url,stable_url,http_status,content_type,last_error,checked_at FROM npm_cdn_checks WHERE site_id=$1 ORDER BY checked_at DESC`,[row.site_id])).rows;
   }
@@ -290,8 +294,9 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
   if(cf&&!/^[a-z0-9][a-z0-9-]{0,62}$/.test(cf))throw badRequest('Cloudflare 项目名仅支持小写字母、数字和连字符');
   if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw badRequest('防失联邮箱格式不正确');
   try{npmPackage=req.body?.npm_package_name?normalizePackageName(req.body.npm_package_name):'';}catch(error){throw badRequest(error.message);}
-  try { npmLines=npmMode==='custom'?normalizeCdnLines(req.body?.npm_cdn_lines):[]; npmPrimary=npmMode==='custom'?String(req.body?.npm_primary_cdn||'').trim():''; if(npmMode==='custom'&&!npmLines.includes(npmPrimary))npmPrimary=npmLines[0]; } catch(error) { throw badRequest(error.message); }
+  try { npmLines=npmMode==='custom'?normalizeCdnLines(req.body?.npm_cdn_lines):[]; npmPrimary=npmMode==='custom'?String(req.body?.npm_primary_cdn||'').trim():''; if(npmMode==='custom'&&!npmLines.includes(npmPrimary))npmPrimary=''; } catch(error) { throw badRequest(error.message); }
   if(npmEnabled&&!npmPackage)throw badRequest('启用 npm 发布时必须填写 npm 包名');
+  if(npmEnabled&&npmMode==='custom'&&!resolveNpmPageEntryProvider(npmLines,npmPrimary))throw badRequest('自定义 npm 线路至少选择 UNPKG 或 esm.sh 作为网页入口');
   const row = await transaction(async client => {
     const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,cloudflare_project=$5,contact_email=$6,payload=$7::jsonb,npm_enabled=$8,npm_package_name=$9,npm_cdn_mode=$10,npm_cdn_lines=$11::jsonb,npm_primary_cdn=$12,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github,repo,cf,email,JSON.stringify(payload),npmEnabled,npmPackage,npmMode,JSON.stringify(npmLines),npmPrimary])).rows[0];
     if(!updated)throw notFound('站点不存在');

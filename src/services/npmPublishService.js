@@ -2,10 +2,10 @@
 
 const PACKAGE_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]{0,63}\/)?[a-z0-9][a-z0-9._-]{0,119}$/;
 const CDN_PROVIDERS = {
-  npmmirror: { label: '中国大陆极速 · npmmirror', template: (name, version) => `https://registry.npmmirror.com/${name}/${version}/files/index.html` },
-  jsdelivr: { label: '推荐线路 · jsDelivr', template: (name, version) => `https://cdn.jsdelivr.net/npm/${name}@${version}/index.html` },
-  unpkg: { label: '备用线路 1 · UNPKG', template: (name, version) => `https://unpkg.com/${name}@${version}/index.html` },
-  esm: { label: 'ESM 线路 · esm.sh', template: (name, version) => `https://esm.sh/${name}@${version}/index.html` }
+  npmmirror: { label: '中国大陆 npm 镜像 · npmmirror', role: 'package', template: (name, version) => `https://registry.npmmirror.com/${name}/${version}/files/index.html` },
+  jsdelivr: { label: '静态文件分发 · jsDelivr', role: 'package', template: (name, version) => `https://cdn.jsdelivr.net/npm/${name}@${version}/index.html` },
+  unpkg: { label: '网页入口 · UNPKG', role: 'page', template: (name, version) => `https://unpkg.com/${name}@${version}/index.html` },
+  esm: { label: '网页入口 · esm.sh', role: 'page', template: (name, version) => `https://esm.sh/${name}@${version}/index.html` }
 };
 
 function normalizePackageName(value) {
@@ -27,6 +27,17 @@ function normalizeCdnLines(value, fallback = ['jsdelivr', 'unpkg']) {
   return valid;
 }
 
+function isNpmPageEntryProvider(provider) {
+  return CDN_PROVIDERS[provider]?.role === 'page';
+}
+
+function resolveNpmPageEntryProvider(lines, preferred = '') {
+  const selected = normalizeCdnLines(lines);
+  const entries = selected.filter(isNpmPageEntryProvider);
+  if (!entries.length) return '';
+  return entries.includes(preferred) ? preferred : entries[0];
+}
+
 function npmPageUrl(packageName, version = 'latest', provider = 'unpkg') {
   const name = normalizePackageName(packageName);
   const release = String(version || 'latest').trim();
@@ -38,7 +49,16 @@ function npmPageUrl(packageName, version = 'latest', provider = 'unpkg') {
 function npmCdnUrls(packageName, version = 'latest', lines = ['jsdelivr', 'unpkg'], primary = 'jsdelivr') {
   const selected = normalizeCdnLines(lines);
   const main = selected.includes(primary) ? primary : selected[0];
-  return selected.map(provider => ({ provider, label: CDN_PROVIDERS[provider].label, primary: provider === main, url: npmPageUrl(packageName, version, provider) }));
+  const entryPrimary = resolveNpmPageEntryProvider(selected, primary);
+  return selected.map(provider => ({
+    provider,
+    label: CDN_PROVIDERS[provider].label,
+    role: CDN_PROVIDERS[provider].role,
+    page_entry: isNpmPageEntryProvider(provider),
+    primary: provider === main,
+    entry_primary: provider === entryPrimary,
+    url: npmPageUrl(packageName, version, provider)
+  }));
 }
 
 function npmWorkflow() {
@@ -89,4 +109,4 @@ function npmPackageFiles({ packageName, version, githubRepo, siteName }) {
   };
 }
 
-module.exports = { CDN_PROVIDERS, normalizePackageName, normalizeCdnLines, npmVersionForJob, npmPageUrl, npmCdnUrls, npmPackageFiles };
+module.exports = { CDN_PROVIDERS, normalizePackageName, normalizeCdnLines, isNpmPageEntryProvider, resolveNpmPageEntryProvider, npmVersionForJob, npmPageUrl, npmCdnUrls, npmPackageFiles };

@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 const { execFile } = require('node:child_process');
 
 const execFileAsync = promisify(execFile);
-const { npmPageUrl, npmCdnUrls } = require('./npmPublishService');
+const { npmPageUrl, npmCdnUrls, resolveNpmPageEntryProvider } = require('./npmPublishService');
 const GITHUB_API = 'https://api.github.com';
 const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 const GITHUB_API_VERSION = '2026-03-10';
@@ -232,7 +232,7 @@ async function triggerNpmPublish(input, dependencies = {}) {
 
 async function deployNpmPackage(input, dependencies = {}) {
   const verify = dependencies.verify || verifyPublishedManifest;
-  const primary = input.npmPrimaryCdn || 'unpkg';
+  const primary = resolveNpmPageEntryProvider(input.npmCdnLines || ['unpkg'], input.npmPrimaryCdn) || 'unpkg';
   // UNPKG remains the registry-publication confirmation source; selected CDNs may sync later.
   const exactUrl = npmPageUrl(input.npmPackageName, input.npmVersion, 'unpkg');
   const stableUrl = npmPageUrl(input.npmPackageName, 'latest', primary);
@@ -288,6 +288,21 @@ async function verifyNpmStable(baseUrl, expectedSha, dependencies = {}) {
 async function verifyNpmCdnLine(item, expectedSha, dependencies = {}) {
   const fetchImpl = dependencies.fetchImpl || fetch;
   const verify = dependencies.verify || verifyPublishedManifest;
+  if (!item.page_entry) {
+    if (item.provider === 'npmmirror') {
+      return { ...item, status: 'package_mirror', http_status: null, content_type: '', last_error: '仅作为 npm 安装镜像，不参与网页入口检测', checked_at: new Date().toISOString() };
+    }
+    try {
+      const baseUrl = item.url.replace(/index\.html$/, '');
+      const manifest = await verify(baseUrl, expectedSha, { ...dependencies, attempts: dependencies.cdnAttempts || 3, intervalMs: dependencies.cdnIntervalMs || 2_000 });
+      const response = await fetchImpl(item.url, { cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(10_000) });
+      const contentType = String(response.headers?.get?.('content-type') || '');
+      if (!response.ok) return { ...item, status: 'syncing', http_status: response.status, content_type: contentType, last_error: `静态文件返回 HTTP ${response.status}` };
+      return { ...item, status: 'package_available', http_status: response.status, content_type: contentType, manifest_sha256: expectedSha, manifest_url: manifest.manifest_url, checked_at: new Date().toISOString() };
+    } catch (error) {
+      return { ...item, status: 'syncing', http_status: null, content_type: '', last_error: String(error.message || error).slice(0, 300), checked_at: new Date().toISOString() };
+    }
+  }
   const baseUrl = item.url.replace(/index\.html$/, '');
   try {
     const manifest = await verify(baseUrl, expectedSha, { ...dependencies, attempts: dependencies.cdnAttempts || 3, intervalMs: dependencies.cdnIntervalMs || 2_000 });

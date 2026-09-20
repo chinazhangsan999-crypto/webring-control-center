@@ -7,12 +7,13 @@ const crypto = require('node:crypto');
 const { renderPublishPage, renderPublishBundle, normalizeEntries } = require('../packages/publish-page-template/render');
 const { parsePublishPayload } = require('../src/services/controlService');
 
-test('发布页同时展示自定义域名、GitHub Pages 与 npm CDN 地址', () => {
-  const html = renderPublishPage({ siteName: '测试站', permanentUrl: 'https://publish.example.com', githubPagesUrl: 'https://owner.github.io/site/', npmPageUrl: 'https://unpkg.com/link-status-page@latest/index.html', npmPageUrls: [{ label: '推荐线路 · jsDelivr', primary: true, url: 'https://cdn.jsdelivr.net/npm/link-status-page@latest/index.html' }, { label: '备用线路 · UNPKG', primary: false, url: 'https://unpkg.com/link-status-page@latest/index.html' }], entries: [{ name: '主入口', url: 'https://site.example.com' }] });
+test('发布页只展示可渲染的 npm 网页入口，包分发线路不提供打开地址', () => {
+  const html = renderPublishPage({ siteName: '测试站', permanentUrl: 'https://publish.example.com', githubPagesUrl: 'https://owner.github.io/site/', npmPageUrl: 'https://unpkg.com/link-status-page@latest/index.html', npmPageUrls: [{ label: '静态文件分发 · jsDelivr', page_entry: false, url: 'https://cdn.jsdelivr.net/npm/link-status-page@latest/index.html' }, { label: '网页入口 · UNPKG', page_entry: true, entry_primary: true, url: 'https://unpkg.com/link-status-page@latest/index.html' }], entries: [{ name: '主入口', url: 'https://site.example.com' }] });
   assert.match(html, /https:\/\/publish\.example\.com/);
   assert.match(html, /https:\/\/owner\.github\.io\/site\//);
   assert.match(html, /https:\/\/unpkg\.com\/link-status-page@latest\/index\.html/);
-  assert.match(html, /https:\/\/cdn\.jsdelivr\.net\/npm\/link-status-page@latest\/index\.html/);
+  assert.match(html, /静态文件分发 · jsDelivr：仅用于包分发，不作为网页入口/);
+  assert.doesNotMatch(html, /https:\/\/cdn\.jsdelivr\.net\/npm\/link-status-page@latest\/index\.html/);
   assert.doesNotMatch(html, /pages\.dev/);
 });
 

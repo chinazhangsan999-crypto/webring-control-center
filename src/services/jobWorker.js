@@ -10,7 +10,7 @@ const AlertService = require('./alertService');
 const JobAlertService = require('./jobAlertService');
 const PlatformSettingsService = require('./platformSettingsService');
 const { classifyJobError, retryDelaySeconds, completedPublishSteps } = require('./jobQueueService');
-const { npmVersionForJob, npmPageUrl, npmCdnUrls, npmPackageFiles } = require('./npmPublishService');
+const { npmVersionForJob, npmPageUrl, npmCdnUrls, resolveNpmPageEntryProvider, npmPackageFiles } = require('./npmPublishService');
 
 let stopped = true;
 let timer = null;
@@ -60,7 +60,7 @@ async function preparePublishPage(siteId, options = {}) {
   const npmLines = site.npm_cdn_mode === 'custom' ? site.npm_cdn_lines : settings.npm.lines;
   const npmPrimary = site.npm_cdn_mode === 'custom' ? site.npm_primary_cdn : settings.npm.primary;
   const npmUrls = site.npm_enabled ? npmCdnUrls(site.npm_package_name, 'latest', npmLines, npmPrimary) : [];
-  const npmUrl = npmUrls.find(item => item.primary)?.url || '';
+  const npmUrl = npmUrls.find(item => item.entry_primary)?.url || '';
   const bundle = renderPublishBundle({ siteName: site.name, siteUrl: site.public_url, logoUrl: site.payload?.logo_url, headline: site.payload?.page_title, description: site.payload?.description, announcement: site.payload?.announcement, permanentUrl: site.permanent_url, githubPagesUrl: site.github_pages_url, npmPageUrl: npmUrl, npmPageUrls: npmUrls, contactEmail: site.contact_email, entries, generatedAt: options.generatedAt });
   return { site, bundle, npmLines, npmPrimary, npmUrls };
 }
@@ -128,7 +128,8 @@ async function buildPublishPage(job, options = {}) {
     await fs.rename(temporary, destination);
   }
   const html = bundle['index.html'];
-  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled ? npmPageUrl(site.npm_package_name, 'latest', npmPrimary) : '', npm_cdn_lines: site.npm_enabled ? npmLines : [], npm_primary_cdn: site.npm_enabled ? npmPrimary : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
+  const npmEntryProvider = resolveNpmPageEntryProvider(npmLines, npmPrimary);
+  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled && npmEntryProvider ? npmPageUrl(site.npm_package_name, 'latest', npmEntryProvider) : '', npm_cdn_lines: site.npm_enabled ? npmLines : [], npm_primary_cdn: site.npm_enabled ? npmPrimary : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
   await saveStoredPublishBuild(artifactDirectory, build);
   return build;
 }

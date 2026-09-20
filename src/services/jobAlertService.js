@@ -32,7 +32,12 @@ async function enqueueJobAlert(job, outcome, result = {}, error = null) {
   if (site?.github_pages_url) lines.push(`GitHub \u53d1\u5e03地址\uff1a${site.github_pages_url}`);
   if (site?.npm_enabled && site?.npm_package_name) {
     const cdns = result?.platforms?.npm?.cdns || npmCdnUrls(site.npm_package_name, 'latest', site.npm_cdn_lines, site.npm_primary_cdn);
-    for (const item of cdns) lines.push(`npm ${item.label || item.provider}：${item.url || ''}${item.status ? `（${item.status}）` : ''}`);
+    for (const item of cdns) {
+      const prefix = item.page_entry ? 'npm 网页入口' : 'npm 包分发';
+      lines.push(item.page_entry
+        ? `${prefix} ${item.label || item.provider}：${item.url || ''}${item.status ? `（${item.status}）` : ''}`
+        : `${prefix} ${item.label || item.provider}：不作为网页入口${item.status ? `（${item.status}）` : ''}`);
+    }
   }
   if (job.type === 'publish.deploy') {
     const platforms = result?.platforms || error?.progress?.platforms || {};
