@@ -125,9 +125,12 @@ test('第十阶段提供持久任务进度、恢复和 Telegram 到 Bark 告警�
 test('平台与告警设置通过后台 API 管理，npm 支持四条分发线路', () => {
   const admin = source('src/routes/admin.js');
   const migration = source('src/migrations/008_platform_settings_and_npm_cdns.sql');
+  const npmRoleMigration = source('src/migrations/009_npm_cdn_package_statuses.sql');
   const npm = source('src/services/npmPublishService.js');
   assert.match(admin, /platform-settings/);
   assert.match(migration, /platform_secrets/);
   assert.match(migration, /npm_cdn_checks/);
+  assert.match(npmRoleMigration, /package_available/);
+  assert.match(npmRoleMigration, /package_mirror/);
   for (const provider of ['npmmirror', 'jsdelivr', 'unpkg', 'esm']) assert.match(npm, new RegExp(`${provider}:`));
 });
