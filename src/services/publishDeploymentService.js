@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 const { execFile } = require('node:child_process');
 
 const execFileAsync = promisify(execFile);
-const { npmPageUrl } = require('./npmPublishService');
+const { npmPageUrl, npmCdnUrls } = require('./npmPublishService');
 const GITHUB_API = 'https://api.github.com';
 const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 const GITHUB_API_VERSION = '2026-03-10';
@@ -232,24 +232,51 @@ async function triggerNpmPublish(input, dependencies = {}) {
 
 async function deployNpmPackage(input, dependencies = {}) {
   const verify = dependencies.verify || verifyPublishedManifest;
-  const exactUrl = npmPageUrl(input.npmPackageName, input.npmVersion);
-  const stableUrl = npmPageUrl(input.npmPackageName);
+  const primary = input.npmPrimaryCdn || 'unpkg';
+  // UNPKG remains the registry-publication confirmation source; selected CDNs may sync later.
+  const exactUrl = npmPageUrl(input.npmPackageName, input.npmVersion, 'unpkg');
+  const stableUrl = npmPageUrl(input.npmPackageName, 'latest', primary);
+  const verificationStableUrl = npmPageUrl(input.npmPackageName, 'latest', 'unpkg');
   const exactBaseUrl = exactUrl.replace(/index\.html$/, '');
-  const stableBaseUrl = stableUrl.replace(/index\.html$/, '');
+  const stableBaseUrl = verificationStableUrl.replace(/index\.html$/, '');
   try {
     const existing = await verify(exactBaseUrl, input.sha256, { ...dependencies, attempts: 1, intervalMs: 1 });
     const stable = await verify(stableBaseUrl, input.sha256, dependencies);
-    return { package: input.npmPackageName, version: input.npmVersion, url: stableUrl, already_published: true, exact_manifest_url: existing.manifest_url, manifest_url: stable.manifest_url };
+    const cdns = await verifyNpmCdnLines(input, dependencies);
+    return { package: input.npmPackageName, version: input.npmVersion, url: stableUrl, already_published: true, exact_manifest_url: existing.manifest_url, manifest_url: stable.manifest_url, cdns };
   } catch {}
   const triggered = await (dependencies.triggerNpm || triggerNpmPublish)(input, dependencies);
   try {
     const exact = await verify(exactBaseUrl, input.sha256, { ...dependencies, attempts: dependencies.npmAttempts || 60, intervalMs: dependencies.npmIntervalMs || 10_000 });
     const stable = await verify(stableBaseUrl, input.sha256, { ...dependencies, attempts: dependencies.npmAttempts || 60, intervalMs: dependencies.npmIntervalMs || 10_000 });
-    return { ...triggered, package: input.npmPackageName, version: input.npmVersion, url: stableUrl, exact_url: exactUrl, exact_manifest_url: exact.manifest_url, manifest_url: stable.manifest_url };
+    const cdns = await verifyNpmCdnLines(input, dependencies);
+    return { ...triggered, package: input.npmPackageName, version: input.npmVersion, url: stableUrl, exact_url: exactUrl, exact_manifest_url: exact.manifest_url, manifest_url: stable.manifest_url, cdns };
   } catch (error) {
     if (error instanceof DeploymentError) error.platform = 'npm';
     throw error;
   }
+}
+
+async function verifyNpmCdnLine(item, expectedSha, dependencies = {}) {
+  const fetchImpl = dependencies.fetchImpl || fetch;
+  const verify = dependencies.verify || verifyPublishedManifest;
+  const baseUrl = item.url.replace(/index\.html$/, '');
+  try {
+    const manifest = await verify(baseUrl, expectedSha, { ...dependencies, attempts: dependencies.cdnAttempts || 3, intervalMs: dependencies.cdnIntervalMs || 2_000 });
+    const response = await fetchImpl(item.url, { cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(10_000) });
+    const contentType = String(response.headers?.get?.('content-type') || '');
+    const body = await response.text();
+    if (!response.ok) return { ...item, status: 'syncing', http_status: response.status, content_type: contentType, last_error: `页面返回 HTTP ${response.status}` };
+    if (!/text\/html/i.test(contentType) || !/<!doctype html/i.test(body)) return { ...item, status: 'incompatible', http_status: response.status, content_type: contentType, last_error: '未返回完整 HTML 页面' };
+    return { ...item, status: 'available', http_status: response.status, content_type: contentType, manifest_sha256: expectedSha, manifest_url: manifest.manifest_url, checked_at: new Date().toISOString() };
+  } catch (error) {
+    return { ...item, status: 'syncing', http_status: null, content_type: '', last_error: String(error.message || error).slice(0, 300), checked_at: new Date().toISOString() };
+  }
+}
+
+async function verifyNpmCdnLines(input, dependencies = {}) {
+  const lines = npmCdnUrls(input.npmPackageName, input.npmVersion, input.npmCdnLines || ['unpkg'], input.npmPrimaryCdn || 'unpkg');
+  return Promise.all(lines.map(item => verifyNpmCdnLine(item, input.sha256, dependencies)));
 }
 
 async function verifyPublishedManifest(baseUrl, expectedSha, dependencies = {}) {
@@ -334,6 +361,8 @@ module.exports = {
   deployCloudflarePages,
   triggerNpmPublish,
   deployNpmPackage,
+  verifyNpmCdnLine,
+  verifyNpmCdnLines,
   redactSecret,
   verifyPublishedManifest,
   deployDualPlatform

@@ -10,7 +10,8 @@ const SuperAdminService = require('../services/superAdminService');
 const JobWorker = require('../services/jobWorker');
 const AlertService = require('../services/alertService');
 const JobAlertService = require('../services/jobAlertService');
-const { normalizePackageName, npmPageUrl } = require('../services/npmPublishService');
+const PlatformSettingsService = require('../services/platformSettingsService');
+const { normalizePackageName, normalizeCdnLines, npmCdnUrls, npmPageUrl } = require('../services/npmPublishService');
 const { badRequest, notFound, conflict } = require('../lib/errors');
 
 const router = express.Router();
@@ -24,6 +25,40 @@ function numericId(value, label = '编号') {
 
 function actor(req) { return { type: 'admin', id: req.admin.id }; }
 
+async function testGithub(config) {
+  if (!config.githubToken) throw badRequest('请先填写 GitHub Token');
+  const response = await fetch('https://api.github.com/user', { headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${config.githubToken}`, 'User-Agent': 'webring-control-center' }, signal: AbortSignal.timeout(15_000) });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) throw badRequest(`GitHub 连接失败：${data?.message || `HTTP ${response.status}`}`);
+  return { account: data?.login || '', message: 'GitHub Token 有效' };
+}
+
+async function testCloudflare(config) {
+  if (!config.cloudflareToken) throw badRequest('请先填写 Cloudflare API Token');
+  const response = await fetch('https://api.cloudflare.com/client/v4/user/tokens/verify', { headers: { Authorization: `Bearer ${config.cloudflareToken}` }, signal: AbortSignal.timeout(15_000) });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || data?.success === false) throw badRequest(`Cloudflare 连接失败：${data?.errors?.[0]?.message || `HTTP ${response.status}`}`);
+  return { status: data?.result?.status || 'active', message: 'Cloudflare Token 有效' };
+}
+
+async function testTelegram(config) {
+  if (!config.telegramToken || !config.telegramChatId) throw badRequest('请先填写 Telegram Bot Token 与 Chat ID');
+  const response = await fetch(`https://api.telegram.org/bot${config.telegramToken}/getMe`, { signal: AbortSignal.timeout(15_000) });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || data?.ok === false) throw badRequest(`Telegram 连接失败：${data?.description || `HTTP ${response.status}`}`);
+  return { account: data?.result?.username || '', message: 'Telegram Bot Token 有效' };
+}
+
+async function testBark(config) {
+  if (!config.barkUrl) throw badRequest('请先填写 Bark URL');
+  let url;
+  try { url = new URL(config.barkUrl); } catch { throw badRequest('Bark URL 不合法'); }
+  if (!['http:', 'https:'].includes(url.protocol)) throw badRequest('Bark URL 只允许 HTTP/HTTPS');
+  const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: '【总后台】Bark 连接测试', body: '这是一条连接测试通知。', group: '总后台' }), signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw badRequest(`Bark 连接失败：HTTP ${response.status}`);
+  return { message: 'Bark 测试通知已发送' };
+}
+
 router.get('/security', asyncRoute(async (req, res) => ok(res,
   await SuperAdminService.getSecurityOverview(req.admin.id, req.admin.sessionId))));
 
@@ -34,6 +69,29 @@ router.put('/security/account', asyncRoute(async (req, res) => ok(res,
 router.post('/security/revoke-sessions', asyncRoute(async (req, res) => ok(res,
   await SuperAdminService.revokeOtherSessions(req.admin.id, req.admin.sessionId, req.ip),
   '其他管理会话已全部退出')));
+
+router.get('/platform-settings', asyncRoute(async (_req, res) => ok(res, await PlatformSettingsService.safeSettings())));
+router.put('/platform-settings', asyncRoute(async (req, res) => {
+  const saved = await PlatformSettingsService.save(req.body || {});
+  await ControlService.audit(actor(req), 'platform-settings.update', 'settings', 'platforms', { sections: Object.keys(req.body || {}).filter(key => key !== 'secrets'), secret_keys: Object.keys(req.body?.secrets || {}).filter(key => req.body.secrets[key] !== undefined).sort() }, req.ip);
+  return ok(res, saved, '平台与告警设置已保存');
+}));
+router.post('/platform-settings/test/:provider', asyncRoute(async (req, res) => {
+  const provider = String(req.params.provider || '');
+  const runtime = await PlatformSettingsService.runtimeSettings();
+  let result;
+  if (provider === 'github') result = await testGithub({ githubToken: runtime.secrets.github_token });
+  else if (provider === 'cloudflare') result = await testCloudflare({ cloudflareToken: runtime.secrets.cloudflare_token });
+  else if (provider === 'npm') {
+    const response = await fetch(`${runtime.npm.registry}/-/ping`, { signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw badRequest(`npm Registry 连接失败：HTTP ${response.status}`);
+    result = { message: 'npm Registry 可访问，发布认证使用 GitHub OIDC' };
+  } else if (provider === 'telegram') result = await testTelegram({ telegramToken: runtime.secrets.telegram_token, telegramChatId: runtime.alerts.telegram_chat_id });
+  else if (provider === 'bark') result = await testBark({ barkUrl: runtime.secrets.bark_url });
+  else throw badRequest('未知平台');
+  await ControlService.audit(actor(req), 'platform-settings.test', 'settings', provider, { success: true }, req.ip);
+  return ok(res, result, result.message);
+}));
 
 router.get('/dashboard', asyncRoute(async (_req, res) => {
   const counts = await one(`SELECT
@@ -196,7 +254,15 @@ router.get('/sites/:id/publish', asyncRoute(async(req,res)=>{
   const row=await one(`SELECT p.*,j.id AS deployment_job_id,j.status AS deployment_status,j.payload AS deployment_payload,j.result AS deployment_result,j.last_error AS deployment_error,j.created_at AS deployment_created_at,j.started_at AS deployment_started_at,j.finished_at AS deployed_at
     FROM publish_pages p LEFT JOIN LATERAL (SELECT id,status,payload,result,last_error,created_at,started_at,finished_at FROM jobs WHERE type='publish.deploy' AND site_id=p.site_id ORDER BY id DESC LIMIT 1) j ON TRUE
     WHERE p.site_id=$1`,[numericId(req.params.id)]);
-  if(row?.npm_enabled&&row.npm_package_name)row.npm_page_url=npmPageUrl(row.npm_package_name);
+  if(row?.npm_enabled&&row.npm_package_name){
+    const settings=await PlatformSettingsService.safeSettings();
+    const lines=row.npm_cdn_mode==='custom'?row.npm_cdn_lines:settings.npm.lines;
+    const primary=row.npm_cdn_mode==='custom'?row.npm_primary_cdn:settings.npm.primary;
+    row.npm_page_urls=npmCdnUrls(row.npm_package_name,'latest',lines,primary);
+    row.npm_page_url=row.npm_page_urls.find(item=>item.primary)?.url||npmPageUrl(row.npm_package_name);
+    row.npm_effective_lines=lines; row.npm_effective_primary=primary;
+    row.npm_cdn_checks=(await query(`SELECT provider,status,page_url,stable_url,http_status,content_type,last_error,checked_at FROM npm_cdn_checks WHERE site_id=$1 ORDER BY checked_at DESC`,[row.site_id])).rows;
+  }
   return ok(res,row);
 }));
 router.get('/sites/:id/publish/preview', asyncRoute(async(req,res)=>{
@@ -219,17 +285,18 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
   if(!permanent||!github)throw badRequest('请同时填写自定义永久发布域名和 GitHub Pages 地址');
   if(new URL(permanent).hostname.toLowerCase().endsWith('.pages.dev'))throw badRequest('自定义永久发布域名不能使用 pages.dev 原生地址');
   if(!new URL(github).hostname.toLowerCase().endsWith('.github.io'))throw badRequest('GitHub Pages 地址必须使用 github.io 原生地址');
-  const repo=String(req.body?.github_repo||'').trim().slice(0,200); const cf=String(req.body?.cloudflare_project||'').trim().slice(0,120); const email=String(req.body?.contact_email||'').trim().slice(0,200); const payload=ControlService.parsePublishPayload(req.body?.payload); const npmEnabled=req.body?.npm_enabled===true; let npmPackage='';
+  const repo=String(req.body?.github_repo||'').trim().slice(0,200); const cf=String(req.body?.cloudflare_project||'').trim().slice(0,120); const email=String(req.body?.contact_email||'').trim().slice(0,200); const payload=ControlService.parsePublishPayload(req.body?.payload); const npmEnabled=req.body?.npm_enabled===true; const npmMode=req.body?.npm_cdn_mode==='custom'?'custom':'inherit'; let npmPackage=''; let npmLines=[]; let npmPrimary='';
   if(repo&&!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo))throw badRequest('GitHub 仓库请使用 owner/repository 格式');
   if(cf&&!/^[a-z0-9][a-z0-9-]{0,62}$/.test(cf))throw badRequest('Cloudflare 项目名仅支持小写字母、数字和连字符');
   if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw badRequest('防失联邮箱格式不正确');
   try{npmPackage=req.body?.npm_package_name?normalizePackageName(req.body.npm_package_name):'';}catch(error){throw badRequest(error.message);}
+  try { npmLines=npmMode==='custom'?normalizeCdnLines(req.body?.npm_cdn_lines):[]; npmPrimary=npmMode==='custom'?String(req.body?.npm_primary_cdn||'').trim():''; if(npmMode==='custom'&&!npmLines.includes(npmPrimary))npmPrimary=npmLines[0]; } catch(error) { throw badRequest(error.message); }
   if(npmEnabled&&!npmPackage)throw badRequest('启用 npm 发布时必须填写 npm 包名');
   const row = await transaction(async client => {
-    const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,cloudflare_project=$5,contact_email=$6,payload=$7::jsonb,npm_enabled=$8,npm_package_name=$9,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github,repo,cf,email,JSON.stringify(payload),npmEnabled,npmPackage])).rows[0];
+    const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,cloudflare_project=$5,contact_email=$6,payload=$7::jsonb,npm_enabled=$8,npm_package_name=$9,npm_cdn_mode=$10,npm_cdn_lines=$11::jsonb,npm_primary_cdn=$12,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github,repo,cf,email,JSON.stringify(payload),npmEnabled,npmPackage,npmMode,JSON.stringify(npmLines),npmPrimary])).rows[0];
     if(!updated)throw notFound('站点不存在');
     await ControlService.bumpRevisions('publish',[siteId],client);
-    await ControlService.audit(actor(req),'publish.update','site',siteId,{github_repo:repo,cloudflare_project:cf,npm_enabled:npmEnabled,npm_package_name:npmPackage},req.ip,client);
+    await ControlService.audit(actor(req),'publish.update','site',siteId,{github_repo:repo,cloudflare_project:cf,npm_enabled:npmEnabled,npm_package_name:npmPackage,npm_cdn_mode:npmMode,npm_cdn_lines:npmLines,npm_primary_cdn:npmPrimary},req.ip,client);
     return updated;
   });
   return ok(res,row,'发布页配置已更新');
@@ -271,18 +338,19 @@ router.get('/jobs/overview', asyncRoute(async(_req,res)=>{
   return ok(res,{
     counts,
     worker:JobWorker.getWorkerStatus(),
-    channels:AlertService.configuredChannels(),
+    channels:await AlertService.configuredChannelsAsync(),
     alert_success_rate:alertCompleted?Number(((Number(counts.alerts_succeeded_24h)/alertCompleted)*100).toFixed(1)):null,
     recent_alert_error:recentAlertError
   });
 }));
 router.post('/alerts/test', asyncRoute(async(req,res)=>{
-  if(!Object.values(AlertService.configuredChannels()).some(Boolean))throw badRequest('请先配置 Telegram 或 Bark 告警通道');
+  const channels=await AlertService.configuredChannelsAsync();
+  if(!Object.values(channels).some(Boolean))throw badRequest('请先配置 Telegram 或 Bark 告警通道');
   const job=await JobAlertService.enqueueAlert({
     event_type:'alert_test',severity:'info',title:'告警通道测试',
     body:`总后台告警队列工作正常。\n触发管理员：${req.admin.username}\n测试时间：${new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',dateStyle:'medium',timeStyle:'medium',hour12:false}).format(new Date())}`
   });
-  await ControlService.audit(actor(req),'alert.test.queue','job',job.id,{channels:AlertService.configuredChannels()},req.ip);
+  await ControlService.audit(actor(req),'alert.test.queue','job',job.id,{channels},req.ip);
   return ok(res,job,'告警测试已加入队列',202);
 }));
 router.post('/jobs/:id/retry', asyncRoute(async(req,res)=>{

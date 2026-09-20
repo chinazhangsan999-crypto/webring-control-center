@@ -119,3 +119,13 @@ test('第十阶段提供持久任务进度、恢复和 Telegram 到 Bark 告警�
   assert.match(adminApp, /24 小时告警成功率/);
   assert.match(adminApp, /最近告警失败/);
 });
+
+test('平台与告警设置通过后台 API 管理，npm 支持四条分发线路', () => {
+  const admin = source('src/routes/admin.js');
+  const migration = source('src/migrations/008_platform_settings_and_npm_cdns.sql');
+  const npm = source('src/services/npmPublishService.js');
+  assert.match(admin, /platform-settings/);
+  assert.match(migration, /platform_secrets/);
+  assert.match(migration, /npm_cdn_checks/);
+  for (const provider of ['npmmirror', 'jsdelivr', 'unpkg', 'esm']) assert.match(npm, new RegExp(`${provider}:`));
+});

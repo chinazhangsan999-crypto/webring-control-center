@@ -30,6 +30,10 @@ function configuredChannels(config = alertConfig()) {
   return { telegram: Boolean(config.telegramToken && config.telegramChatId), bark: Boolean(config.barkUrl) };
 }
 
+async function configuredChannelsAsync() {
+  return configuredChannels(await require('./platformSettingsService').alertRuntimeConfig());
+}
+
 function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 function splitText(text, maxCharacters = 3500) {
@@ -123,7 +127,7 @@ async function sendBark(title, content, config, dependencies = {}) {
 }
 
 async function sendAlert(payload, dependencies = {}) {
-  const config = dependencies.config || alertConfig();
+  const config = dependencies.config || await require('./platformSettingsService').alertRuntimeConfig();
   const channels = configuredChannels(config);
   const title = `\u3010${config.siteName}\u3011${String(payload?.title || '\u7cfb\u7edf\u901a\u77e5').trim().slice(0, 150)}`;
   const content = String(payload?.body || '').trim().slice(0, 50000);
@@ -148,4 +152,4 @@ async function sendAlert(payload, dependencies = {}) {
   throw new AlertDeliveryError(reason, { results });
 }
 
-module.exports = { AlertDeliveryError, alertConfig, configuredChannels, splitText, splitUtf8, markdownLinks, sendTelegram, sendBark, sendAlert };
+module.exports = { AlertDeliveryError, alertConfig, configuredChannels, configuredChannelsAsync, splitText, splitUtf8, markdownLinks, sendTelegram, sendBark, sendAlert };

@@ -8,8 +8,9 @@ const ControlService = require('./controlService');
 const PublishDeploymentService = require('./publishDeploymentService');
 const AlertService = require('./alertService');
 const JobAlertService = require('./jobAlertService');
+const PlatformSettingsService = require('./platformSettingsService');
 const { classifyJobError, retryDelaySeconds, completedPublishSteps } = require('./jobQueueService');
-const { npmVersionForJob, npmPageUrl, npmPackageFiles } = require('./npmPublishService');
+const { npmVersionForJob, npmPageUrl, npmCdnUrls, npmPackageFiles } = require('./npmPublishService');
 
 let stopped = true;
 let timer = null;
@@ -53,9 +54,13 @@ async function preparePublishPage(siteId, options = {}) {
   }
   const effectiveConfig = await ControlService.resolveSiteConfig(siteId);
   const entries = publishEntries(site, effectiveConfig.nodes);
-  const npmUrl = site.npm_enabled ? npmPageUrl(site.npm_package_name) : '';
-  const bundle = renderPublishBundle({ siteName: site.name, siteUrl: site.public_url, logoUrl: site.payload?.logo_url, headline: site.payload?.page_title, description: site.payload?.description, announcement: site.payload?.announcement, permanentUrl: site.permanent_url, githubPagesUrl: site.github_pages_url, npmPageUrl: npmUrl, contactEmail: site.contact_email, entries, generatedAt: options.generatedAt });
-  return { site, bundle };
+  const settings = await PlatformSettingsService.safeSettings();
+  const npmLines = site.npm_cdn_mode === 'custom' ? site.npm_cdn_lines : settings.npm.lines;
+  const npmPrimary = site.npm_cdn_mode === 'custom' ? site.npm_primary_cdn : settings.npm.primary;
+  const npmUrls = site.npm_enabled ? npmCdnUrls(site.npm_package_name, 'latest', npmLines, npmPrimary) : [];
+  const npmUrl = npmUrls.find(item => item.primary)?.url || '';
+  const bundle = renderPublishBundle({ siteName: site.name, siteUrl: site.public_url, logoUrl: site.payload?.logo_url, headline: site.payload?.page_title, description: site.payload?.description, announcement: site.payload?.announcement, permanentUrl: site.permanent_url, githubPagesUrl: site.github_pages_url, npmPageUrl: npmUrl, npmPageUrls: npmUrls, contactEmail: site.contact_email, entries, generatedAt: options.generatedAt });
+  return { site, bundle, npmLines, npmPrimary, npmUrls };
 }
 
 async function renderPublishPreview(siteId) {
@@ -64,7 +69,7 @@ async function renderPublishPreview(siteId) {
 }
 
 async function buildPublishPage(job, options = {}) {
-  const { site, bundle } = await preparePublishPage(job.site_id, {
+  const { site, bundle, npmLines, npmPrimary } = await preparePublishPage(job.site_id, {
     publishRevision: job.payload?.publish_revision,
     nodesRevision: job.payload?.nodes_revision,
     generatedAt: options.generatedAt
@@ -85,7 +90,7 @@ async function buildPublishPage(job, options = {}) {
     await fs.rename(temporary, destination);
   }
   const html = bundle['index.html'];
-  return { output: path.join(siteDirectory, 'index.html'), directory: siteDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled ? npmPageUrl(site.npm_package_name) : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
+  return { output: path.join(siteDirectory, 'index.html'), directory: siteDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled ? npmPageUrl(site.npm_package_name, 'latest', npmPrimary) : '', npm_cdn_lines: site.npm_enabled ? npmLines : [], npm_primary_cdn: site.npm_enabled ? npmPrimary : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
 }
 
 async function saveJobProgress(jobId, result, current = null, total = null) {
@@ -118,7 +123,9 @@ async function runPublishWorkflow(job, dependencies = {}) {
       npmPackageName: build.npm_package_name,
       npmVersion: build.npm_version,
       permanentUrl: build.permanent_url,
-      credentials: PublishDeploymentService.deploymentCredentials()
+      npmCdnLines: build.npm_cdn_lines,
+      npmPrimaryCdn: build.npm_primary_cdn,
+      credentials: await PlatformSettingsService.deploymentCredentials()
     }, previous.platforms || {}, {
       ...dependencies,
       onProgress: async platforms => saveJobProgress(job.id, { ...progress, platforms }, completedPublishSteps(platforms), progressTotal)
@@ -126,6 +133,16 @@ async function runPublishWorkflow(job, dependencies = {}) {
     const current = await one('SELECT publish_revision,nodes_revision FROM site_revisions WHERE site_id=$1', [job.site_id]);
     if (!current || Number(current.publish_revision) !== Number(expectedRevisions.publish_revision) || Number(current.nodes_revision) !== Number(expectedRevisions.nodes_revision)) {
       throw new PublishDeploymentService.DeploymentError('发布期间站点配置发生变化，请创建新任务发布最新版本', { retryable: false, progress: platforms });
+    }
+    const cdns = platforms.npm?.cdns || [];
+    if (cdns.length && build.npm_version) {
+      await transaction(async client => {
+        for (const item of cdns) {
+          await client.query(`INSERT INTO npm_cdn_checks(site_id,package_version,provider,page_url,stable_url,status,http_status,content_type,manifest_sha256,attempts,last_error,checked_at)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,1,$10,NOW())
+            ON CONFLICT(site_id,package_version,provider) DO UPDATE SET page_url=EXCLUDED.page_url,stable_url=EXCLUDED.stable_url,status=EXCLUDED.status,http_status=EXCLUDED.http_status,content_type=EXCLUDED.content_type,manifest_sha256=EXCLUDED.manifest_sha256,attempts=npm_cdn_checks.attempts+1,last_error=EXCLUDED.last_error,checked_at=NOW()`, [job.site_id, build.npm_version, item.provider, item.url, npmPageUrl(build.npm_package_name, 'latest', item.provider), item.status, item.http_status, item.content_type || '', item.manifest_sha256 || '', item.last_error || '']);
+        }
+      });
     }
     return { ...progress, platforms };
   } catch (error) {

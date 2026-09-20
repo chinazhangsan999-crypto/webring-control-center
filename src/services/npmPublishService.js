@@ -1,6 +1,12 @@
 'use strict';
 
 const PACKAGE_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]{0,63}\/)?[a-z0-9][a-z0-9._-]{0,119}$/;
+const CDN_PROVIDERS = {
+  npmmirror: { label: '中国大陆极速 · npmmirror', template: (name, version) => `https://registry.npmmirror.com/${name}/${version}/files/index.html` },
+  jsdelivr: { label: '推荐线路 · jsDelivr', template: (name, version) => `https://cdn.jsdelivr.net/npm/${name}@${version}/index.html` },
+  unpkg: { label: '备用线路 1 · UNPKG', template: (name, version) => `https://unpkg.com/${name}@${version}/index.html` },
+  esm: { label: 'ESM 线路 · esm.sh', template: (name, version) => `https://esm.sh/${name}@${version}/index.html` }
+};
 
 function normalizePackageName(value) {
   const name = String(value || '').trim().toLowerCase();
@@ -14,11 +20,25 @@ function npmVersionForJob(jobId) {
   return `0.0.${id}`;
 }
 
-function npmPageUrl(packageName, version = 'latest') {
+function normalizeCdnLines(value, fallback = ['jsdelivr', 'unpkg']) {
+  const lines = Array.isArray(value) ? value.map(item => String(item || '').trim()).filter(item => CDN_PROVIDERS[item]) : [];
+  const valid = [...new Set(lines.length ? lines : fallback.filter(item => CDN_PROVIDERS[item]))];
+  if (!valid.length) throw new Error('请至少选择一条 npm CDN 线路');
+  return valid;
+}
+
+function npmPageUrl(packageName, version = 'latest', provider = 'unpkg') {
   const name = normalizePackageName(packageName);
   const release = String(version || 'latest').trim();
   if (release !== 'latest' && !/^0\.0\.[1-9]\d*$/.test(release)) throw new Error('npm 发布版本不合法');
-  return `https://unpkg.com/${name}@${release}/index.html`;
+  if (!CDN_PROVIDERS[provider]) throw new Error('未知 npm CDN 线路');
+  return CDN_PROVIDERS[provider].template(name, release);
+}
+
+function npmCdnUrls(packageName, version = 'latest', lines = ['jsdelivr', 'unpkg'], primary = 'jsdelivr') {
+  const selected = normalizeCdnLines(lines);
+  const main = selected.includes(primary) ? primary : selected[0];
+  return selected.map(provider => ({ provider, label: CDN_PROVIDERS[provider].label, primary: provider === main, url: npmPageUrl(packageName, version, provider) }));
 }
 
 function npmWorkflow() {
@@ -69,4 +89,4 @@ function npmPackageFiles({ packageName, version, githubRepo, siteName }) {
   };
 }
 
-module.exports = { normalizePackageName, npmVersionForJob, npmPageUrl, npmPackageFiles };
+module.exports = { CDN_PROVIDERS, normalizePackageName, normalizeCdnLines, npmVersionForJob, npmPageUrl, npmCdnUrls, npmPackageFiles };

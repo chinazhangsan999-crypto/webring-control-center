@@ -20,6 +20,7 @@ const CONTROL_CENTER_PUBLIC_URL = String(process.env.CONTROL_CENTER_PUBLIC_URL |
 const INITIAL_ADMIN_USERNAME = String(process.env.INITIAL_ADMIN_USERNAME || 'admin').trim();
 const INITIAL_ADMIN_PASSWORD = String(process.env.INITIAL_ADMIN_PASSWORD || '');
 const TRUST_PROXY = String(process.env.TRUST_PROXY || 'loopback').trim();
+const SETTINGS_ENCRYPTION_KEY = String(process.env.SETTINGS_ENCRYPTION_KEY || '').trim();
 
 if (!DATABASE_URL) throw new Error('缺少 DATABASE_URL');
 if (NODE_ENV === 'production' && INITIAL_ADMIN_PASSWORD && INITIAL_ADMIN_PASSWORD.length < 12) {
@@ -38,5 +39,6 @@ module.exports = {
   CONTROL_CENTER_PUBLIC_URL,
   INITIAL_ADMIN_USERNAME,
   INITIAL_ADMIN_PASSWORD,
-  TRUST_PROXY
+  TRUST_PROXY,
+  SETTINGS_ENCRYPTION_KEY
 };

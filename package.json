@@ -9,7 +9,7 @@
     "dev": "node --watch src/server.js",
     "migrate": "node src/migrate.js",
     "test": "node --test",
-    "check": "node --check src/server.js && node --check src/routes/admin.js && node --check src/services/jobWorker.js && node --check src/services/alertService.js && node --check public/app.js",
+    "check": "node --check src/server.js && node --check src/routes/admin.js && node --check src/services/jobWorker.js && node --check src/services/alertService.js && node --check src/services/platformSettingsService.js && node --check src/services/publishDeploymentService.js && node --check public/app.js",
     "test:local": "npm run check && npm test"
   },
   "engines": {
