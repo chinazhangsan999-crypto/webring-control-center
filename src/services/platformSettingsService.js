@@ -60,7 +60,7 @@ function normalizeSettings(input = {}, fallback = defaults()) {
     github: { enabled: bool(github.enabled, fallback.github.enabled), username: text(github.username, 120), branch: text(github.branch || fallback.github.branch, 80) || 'gh-pages' },
     cloudflare: { enabled: bool(cloudflare.enabled, fallback.cloudflare.enabled), account_id: text(cloudflare.account_id || fallback.cloudflare.account_id, 160), branch: text(cloudflare.branch || fallback.cloudflare.branch, 80) || 'main' },
     npm: { enabled: bool(npm.enabled, fallback.npm.enabled), username: text(npm.username, 120), registry: 'https://registry.npmjs.org', lines, primary },
-    alerts: { site_name: text(alerts.site_name || fallback.alerts.site_name, 100) || '星环总控', telegram_enabled: bool(alerts.telegram_enabled, fallback.alerts.telegram_enabled), telegram_chat_id: text(alerts.telegram_chat_id || fallback.alerts.telegram_chat_id, 100), bark_enabled: bool(alerts.bark_enabled, fallback.alerts.bark_enabled), timeout_ms: Math.min(30000, Math.max(1000, integer(alerts.timeout_ms, fallback.alerts.timeout_ms))), retry_delay_ms: Math.min(10000, Math.max(0, integer(alerts.retry_delay_ms, fallback.alerts.retry_delay_ms))) }
+    alerts: { site_name: text(alerts.site_name || fallback.alerts.site_name, 100) || '星环总控', telegram_enabled: bool(alerts.telegram_enabled, fallback.alerts.telegram_enabled), telegram_chat_id: text(alerts.telegram_chat_id || alerts.telegram?.chat_id || fallback.alerts.telegram_chat_id, 100), bark_enabled: bool(alerts.bark_enabled, fallback.alerts.bark_enabled), timeout_ms: Math.min(30000, Math.max(1000, integer(alerts.timeout_ms, fallback.alerts.timeout_ms))), retry_delay_ms: Math.min(10000, Math.max(0, integer(alerts.retry_delay_ms, fallback.alerts.retry_delay_ms))) }
   };
 }
 
@@ -71,7 +71,7 @@ async function safeSettings() {
   const settings = normalizeSettings(row?.settings || {}, fallback);
   const secrets = await transaction(async client => (await client.query('SELECT name,hint FROM platform_secrets ORDER BY name')).rows);
   const hints = Object.fromEntries(secrets.map(item => [item.name, item.hint]));
-  return { ...settings, encryption_ready: Boolean(encryptionKey()), credentials: {
+  return { ...settings, alerts: { ...settings.alerts, telegram: { chat_id: settings.alerts.telegram_chat_id } }, encryption_ready: Boolean(encryptionKey()), credentials: {
     github_token: { configured: Boolean(hints.github_token || process.env.PUBLISH_GITHUB_TOKEN), hint: hints.github_token || secretHint(process.env.PUBLISH_GITHUB_TOKEN) },
     cloudflare_token: { configured: Boolean(hints.cloudflare_token || process.env.PUBLISH_CLOUDFLARE_API_TOKEN), hint: hints.cloudflare_token || secretHint(process.env.PUBLISH_CLOUDFLARE_API_TOKEN) },
     telegram_token: { configured: Boolean(hints.telegram_token || process.env.ALERT_TELEGRAM_BOT_TOKEN), hint: hints.telegram_token || secretHint(process.env.ALERT_TELEGRAM_BOT_TOKEN) },

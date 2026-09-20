@@ -19,6 +19,7 @@ test('npm 默认线路只接受四个允许的提供方，并确保主线路属�
   const settings = normalizeSettings({ npm: { lines: ['esm'], primary: 'unpkg' } });
   assert.deepEqual(settings.npm.lines, ['esm']);
   assert.equal(settings.npm.primary, 'esm');
+  assert.equal(normalizeSettings({ alerts: { telegram: { chat_id: '12345' } } }).alerts.telegram_chat_id, '12345');
 });
 
 test('npm 发布页为每个选定线路生成固定版本和 latest 地址', () => {
