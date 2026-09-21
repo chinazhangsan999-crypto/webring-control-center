@@ -189,6 +189,14 @@ tr:last-child td { border-bottom: 0; }
 .platform-account-card fieldset { margin: 9px 0 0; padding: 8px; border: 1px dashed #cfd8e8; border-radius: 8px; }
 .platform-account-card fieldset[hidden] { display: none; }
 .platform-account-card legend { padding: 0 5px; color: var(--primary); font-size: 10px; font-weight: 750; }
+.site-account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; }
+.site-account-card { min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcff; }
+.site-account-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.site-account-card h3 { margin: 2px 0; font-size: 14px; }
+.site-account-card p { margin: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.site-account-status { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; padding-top: 9px; border-top: 1px solid #e9edf5; }
+.site-account-card > footer { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.site-account-card > footer button { min-height: 30px; padding: 4px 8px; font-size: 11px; }
 .publish-content-fields { margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); }
 
 .toast { position: fixed; right: 16px; bottom: 16px; z-index: 100; max-width: min(380px, calc(100vw - 32px)); padding: 9px 12px; border-radius: 10px; background: #253250; box-shadow: 0 14px 34px rgba(37, 50, 80, .22); color: #fff; font-size: 12px; }
@@ -259,7 +267,7 @@ dialog::backdrop { background: rgba(23, 33, 59, .36); backdrop-filter: blur(4px)
   .form-grid { grid-template-columns: 1fr; }
   .span-2 { grid-column: auto; }
   .choice-grid { grid-template-columns: 1fr; }
-  .settings-grid, .settings-grid--alerts, .cdn-choice-list, .cdn-route-grid { grid-template-columns: 1fr; }
+  .settings-grid, .settings-grid--alerts, .cdn-choice-list, .cdn-route-grid, .site-account-grid { grid-template-columns: 1fr; }
   .platform-account-card > header { align-items: stretch; flex-direction: column; }
   .platform-account-card > header select { width: 100%; }
   .login-card { padding: 20px 16px; }

@@ -80,7 +80,7 @@ async function save(siteId, payload = {}, existingClient = null) {
       if (!Object.prototype.hasOwnProperty.call(payload, platform)) continue;
       const current = currentRows.find(item => item.platform === platform) || {};
       const requested = payload[platform] || {};
-      const mode = normalizeMode(requested.mode);
+      const mode = requested.mode === undefined ? normalizeMode(current.account_mode) : normalizeMode(requested.mode);
       const settings = normalizePlatformSettings(platform, requested.settings || current.settings || {});
       const changed = mode !== normalizeMode(current.account_mode)
         || JSON.stringify(settings) !== JSON.stringify(normalizePlatformSettings(platform, current.settings || {}));
@@ -109,6 +109,22 @@ async function save(siteId, payload = {}, existingClient = null) {
   }
   await transaction(run);
   return safeSettings(siteId);
+}
+
+async function resolveSiteAccount(siteId, platform) {
+  if (!PLATFORMS.includes(platform)) throw new Error('未知发布平台');
+  const row = (await rowsForSite(siteId)).find(item => item.platform === platform);
+  const settings = normalizePlatformSettings(platform, row?.settings || {});
+  const secretName = SECRET_BY_PLATFORM[platform];
+  let token = '';
+  if (secretName) {
+    const secretRow = (await query(`SELECT encrypted_value FROM site_publish_secrets
+      WHERE site_id=$1 AND platform=$2 AND secret_name=$3`, [siteId, platform, secretName])).rows[0];
+    token = PlatformSettingsService.decrypt(secretRow?.encrypted_value);
+    assertConfigured(token, `请先填写 ${platform} 本站独立账号凭据`);
+  }
+  if (platform === 'cloudflare') assertConfigured(settings.account_id, '请填写 Cloudflare 本站独立 Account ID');
+  return { enabled: true, source: 'site', settings, credentials: token ? { token } : {} };
 }
 
 function assertConfigured(condition, message) {
@@ -176,4 +192,4 @@ function bindingsMatch(expected = {}, current = {}) {
     && String(expected[platform].config_key || '') === String(current[platform]?.config_key || ''));
 }
 
-module.exports = { PLATFORMS, MODES, normalizeMode, normalizePlatformSettings, ensureSite, safeSettings, save, resolveForDeployment, bindingsMatch };
+module.exports = { PLATFORMS, MODES, normalizeMode, normalizePlatformSettings, ensureSite, safeSettings, save, resolveSiteAccount, resolveForDeployment, bindingsMatch };

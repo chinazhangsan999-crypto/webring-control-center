@@ -27,6 +27,7 @@ test('Notion 同步只写入受控区块并保留可点击入口', async () => {
   const result = await syncNotionPage({ token: 'secret', pageId: '0123456789abcdef0123456789abcdef', publicUrl: 'https://workspace.notion.site/publish', previousBlockId: 'old-block', siteName: '测试站', permanentUrl: 'https://go.example.com/', githubPagesUrl: 'https://owner.github.io/site/', npmPageUrls, entries: [{ name: '主站', url: 'https://site.example.com/' }], sha256: 'a'.repeat(64) }, { fetchImpl });
   assert.equal(result.sync_block_id, 'new-block');
   assert.equal(calls.filter(item => item.method === 'PATCH').length, 2);
+  assert.deepEqual(calls.find(item => item.url.includes('/blocks/old-block')).body, { in_trash: true });
   assert.match(JSON.stringify(calls.at(-1).body), /最新访问入口/);
   assert.match(JSON.stringify(calls.at(-1).body), /npm 网页入口/);
   assert.match(JSON.stringify(calls.at(-1).body), /esm\.sh 网页入口/);

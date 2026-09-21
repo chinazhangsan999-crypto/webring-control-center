@@ -94,7 +94,7 @@ async function syncNotionPage(input, dependencies = {}) {
   if (!publicUrl) throw new NotionPublishError('Notion 公开地址必须是 https://*.notion.site 或 https://*.notion.so', { retryable: false });
   await request(fetchImpl, input.token, `/pages/${pageId}`);
   if (input.previousBlockId) {
-    try { await request(fetchImpl, input.token, `/blocks/${encodeURIComponent(input.previousBlockId)}`, { method: 'PATCH', body: { archived: true } }); }
+    try { await request(fetchImpl, input.token, `/blocks/${encodeURIComponent(input.previousBlockId)}`, { method: 'PATCH', body: { in_trash: true } }); }
     catch (error) { if (error?.detail?.status !== 404) throw error; }
   }
   const created = await request(fetchImpl, input.token, `/blocks/${pageId}/children`, { method: 'PATCH', body: { children: buildManagedBlocks(input) } });

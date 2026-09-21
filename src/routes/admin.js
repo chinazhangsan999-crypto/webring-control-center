@@ -73,6 +73,11 @@ router.post('/security/revoke-sessions', asyncRoute(async (req, res) => ok(res,
   '其他管理会话已全部退出')));
 
 router.get('/platform-settings', asyncRoute(async (_req, res) => ok(res, await PlatformSettingsService.safeSettings())));
+router.get('/platform-settings/site-accounts', asyncRoute(async (_req, res) => {
+  const sites=(await query('SELECT id,name,slug FROM sites ORDER BY name,id')).rows;
+  const items=await Promise.all(sites.map(async site=>({site,platforms:await SitePublishPlatformService.safeSettings(site.id)})));
+  return ok(res,items);
+}));
 router.put('/platform-settings', asyncRoute(async (req, res) => {
   const current = await PlatformSettingsService.safeSettings();
   const proposed = PlatformSettingsService.normalizeSettings(req.body || {}, current);
@@ -87,6 +92,42 @@ router.put('/platform-settings', asyncRoute(async (req, res) => {
   }
   await ControlService.audit(actor(req), 'platform-settings.update', 'settings', 'platforms', { sections: Object.keys(req.body || {}).filter(key => key !== 'secrets'), secret_keys: Object.keys(req.body?.secrets || {}).filter(key => req.body.secrets[key] !== undefined).sort(), changed_platforms: changedPlatforms }, req.ip);
   return ok(res, saved, '平台与告警设置已保存');
+}));
+router.put('/platform-settings/sites/:id', asyncRoute(async (req,res)=>{
+  const siteId=numericId(req.params.id);
+  const site=await one('SELECT id,name FROM sites WHERE id=$1',[siteId]);
+  if(!site)throw notFound('站点不存在');
+  const requested=req.body?.platforms&&typeof req.body.platforms==='object'?req.body.platforms:{};
+  for(const name of Object.keys(requested)){if(!SitePublishPlatformService.PLATFORMS.includes(name))throw badRequest('发布平台不合法');}
+  if(requested.npm){
+    const settings=SitePublishPlatformService.normalizePlatformSettings('npm',requested.npm.settings||{});
+    if(!resolveNpmPageEntryProvider(settings.lines,settings.primary))throw badRequest('独立 npm 设置至少选择 UNPKG 或 esm.sh 作为网页入口');
+  }
+  const before=await SitePublishPlatformService.safeSettings(siteId);
+  const payload=Object.fromEntries(Object.entries(requested).map(([name,value])=>[name,{settings:value?.settings,secret:value?.secret}]));
+  const saved=await SitePublishPlatformService.save(siteId,payload);
+  const configChanged=SitePublishPlatformService.PLATFORMS.some(name=>JSON.stringify(before[name]?.settings)!==JSON.stringify(saved[name]?.settings));
+  if(configChanged)await ControlService.bumpRevisions('publish',[siteId]);
+  await ControlService.audit(actor(req),'platform-settings.site.update','site',siteId,{platforms:Object.keys(requested),secret_platforms:Object.entries(requested).filter(([,value])=>value?.secret!==undefined).map(([name])=>name),config_changed:configChanged},req.ip);
+  return ok(res,saved,`${site.name}的独立发布账号已保存`);
+}));
+router.post('/platform-settings/sites/:id/test/:provider', asyncRoute(async (req,res)=>{
+  const siteId=numericId(req.params.id);const provider=String(req.params.provider||'');
+  if(!SitePublishPlatformService.PLATFORMS.includes(provider))throw badRequest('未知发布平台');
+  const site=await one('SELECT id,name FROM sites WHERE id=$1',[siteId]);
+  if(!site)throw notFound('站点不存在');
+  const platform=await SitePublishPlatformService.resolveSiteAccount(siteId,provider);
+  let result;
+  if(provider==='github')result=await testGithub({githubToken:platform.credentials.token});
+  else if(provider==='cloudflare')result=await testCloudflare({cloudflareToken:platform.credentials.token});
+  else if(provider==='npm'){
+    const response=await fetch(`${platform.settings.registry||'https://registry.npmjs.org'}/-/ping`,{signal:AbortSignal.timeout(15000)});
+    if(!response.ok)throw badRequest(`npm Registry 连接失败：HTTP ${response.status}`);
+    result={message:'独立 npm Registry 可访问，发布认证继续使用 GitHub OIDC'};
+  }else if(provider==='notion')result=await verifyNotionToken({token:platform.credentials.token});
+  else throw badRequest('未知发布平台');
+  await ControlService.audit(actor(req),'platform-settings.site.test','site',siteId,{provider,success:true},req.ip);
+  return ok(res,result,`${site.name} · ${result.message}`);
 }));
 router.post('/platform-settings/test/:provider', asyncRoute(async (req, res) => {
   const provider = String(req.params.provider || '');

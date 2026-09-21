@@ -77,6 +77,19 @@ test('永久发布页生成独立静态包并支持 npm 第三发布地址', () 
   assert.match(adminApp, /page_title/);
 });
 
+test('站点独立发布账号集中在平台设置，发布页只选择账号来源', () => {
+  const adminRoutes = source('src/routes/admin.js');
+  const adminApp = source('public/app.js');
+  const publishForm = adminApp.slice(adminApp.indexOf('async function publishForm'), adminApp.indexOf('function platformSettingsForm'));
+  assert.match(adminRoutes, /router\.get\('\/platform-settings\/site-accounts'/);
+  assert.match(adminRoutes, /router\.put\('\/platform-settings\/sites\/:id'/);
+  assert.match(adminRoutes, /router\.post\('\/platform-settings\/sites\/:id\/test\/:provider'/);
+  assert.match(adminApp, /站点独立发布账号/);
+  assert.match(adminApp, /sitePlatformSettingsForm/);
+  assert.match(publishForm, /platformModeOptions/);
+  assert.doesNotMatch(publishForm, /cloudflare_token|github_token|notion_token|npm_username/);
+});
+
 test('三平台工作流独立记录状态并执行远端摘要校验', () => {
   const deployment = source('src/services/publishDeploymentService.js');
   const worker = source('src/services/jobWorker.js');
