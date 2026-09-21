@@ -166,3 +166,17 @@ test('站点发布平台支持禁用、全局与独立账号且不静默回退',
   assert.match(app, /使用本站独立账号/);
   assert.match(app, /系统不会自动回退到全局账号/);
 });
+
+test('npm 首次发布使用一次性 Token 并在成功后展示 Trusted Publisher 指引', () => {
+  const admin = source('src/routes/admin.js');
+  const bootstrap = source('src/services/npmBootstrapService.js');
+  const worker = source('src/services/jobWorker.js');
+  const app = source('public/app.js');
+  assert.match(admin, /publish\/npm\/bootstrap/);
+  assert.match(bootstrap, /NODE_AUTH_TOKEN/);
+  assert.match(bootstrap, /--provenance=false/);
+  assert.doesNotMatch(bootstrap, /INSERT INTO[\s\S]+token/i);
+  assert.match(worker, /npm_bootstrap_status='oidc_verified'/);
+  assert.match(app, /首次发布成功，还需配置 Trusted Publisher/);
+  assert.match(app, /allowed_action\|\|'npm publish'/);
+});

@@ -12,6 +12,7 @@ const AlertService = require('../services/alertService');
 const JobAlertService = require('../services/jobAlertService');
 const PlatformSettingsService = require('../services/platformSettingsService');
 const SitePublishPlatformService = require('../services/sitePublishPlatformService');
+const NpmBootstrapService = require('../services/npmBootstrapService');
 const { normalizePackageName, normalizeCdnLines, npmCdnUrls, npmPageUrl, resolveNpmPageEntryProvider } = require('../services/npmPublishService');
 const { normalizePageId, normalizePublicUrl, verifyNotionToken } = require('../services/notionPublishService');
 const { badRequest, notFound, conflict } = require('../lib/errors');
@@ -354,6 +355,16 @@ router.get('/sites/:id/publish', asyncRoute(async(req,res)=>{
     row.npm_page_url=row.npm_page_urls.find(item=>item.entry_primary)?.url||npmPageUrl(row.npm_package_name);
     row.npm_effective_lines=lines; row.npm_effective_primary=primary;
     row.npm_cdn_checks=(await query(`SELECT provider,status,page_url,stable_url,http_status,content_type,last_error,checked_at FROM npm_cdn_checks WHERE site_id=$1 ORDER BY checked_at DESC`,[row.site_id])).rows;
+    const githubSettings=row.platform_accounts.github?.mode==='site'?row.platform_accounts.github.settings:{};
+    let instructions=null;
+    try{instructions=NpmBootstrapService.trustedPublisherInstructions(row.npm_package_name,row.github_repo,githubSettings.workflow_file||'publish-npm.yml');}catch{}
+    const build=row.deployment_result?.build||{},npmResult=row.deployment_result?.platforms?.npm||{};
+    row.npm_bootstrap={
+      status:row.npm_bootstrap_status||'not_started',version:row.npm_bootstrap_version||'',published_at:row.npm_bootstrap_published_at,
+      oidc_verified_at:row.npm_oidc_verified_at,last_error:row.npm_bootstrap_last_error||'',instructions,
+      eligible:Boolean(row.deployment_status==='failed'&&npmResult.status==='failed'&&build.npm_package_name===row.npm_package_name&&build.npm_version&&build.manifest?.sha256),
+      job_id:row.deployment_job_id||null
+    };
   }
   return ok(res,row);
 }));
@@ -428,6 +439,47 @@ router.post('/sites/:id/publish/jobs', asyncRoute(async(req,res)=>{
     return {job,created};
   });
   return ok(res,result.job,result.created?'发布任务已加入队列':'该站点已有发布任务在执行',result.created?202:200);
+}));
+
+router.post('/sites/:id/publish/npm/bootstrap', asyncRoute(async(req,res)=>{
+  const siteId=numericId(req.params.id);
+  if(req.body?.confirmed!==true)throw badRequest('请确认短效 Token 仅用于首次发布，并会在完成后撤销');
+  const token=String(req.body?.token||'').trim();
+  let config=await one(`SELECT s.id,s.name,p.npm_enabled,p.npm_package_name,p.github_repo,p.npm_bootstrap_status,
+    j.id AS job_id,j.status AS job_status,j.result AS job_result
+    FROM sites s JOIN publish_pages p ON p.site_id=s.id
+    LEFT JOIN LATERAL (SELECT id,status,result FROM jobs WHERE type='publish.deploy' AND site_id=s.id AND status='failed' ORDER BY id DESC LIMIT 1) j ON TRUE
+    WHERE s.id=$1`,[siteId]);
+  if(!config)throw notFound('站点不存在');
+  if(!config.npm_enabled||!config.npm_package_name)throw badRequest('请先启用 npm 并填写包名');
+  if(config.npm_bootstrap_status==='oidc_verified')throw conflict('该站点已完成 npm OIDC 验证，不需要首次发布');
+  if(!config.job_id)throw badRequest('请先执行一次发布任务，生成首次发布包');
+  const build=config.job_result?.build||{},npmFailure=config.job_result?.platforms?.npm;
+  if(npmFailure?.status!=='failed'||build.npm_package_name!==config.npm_package_name||!build.npm_version||!build.manifest?.sha256)throw badRequest('最近失败任务没有可用的 npm 首次发布包');
+  const stored=await JobWorker.loadStoredPublishBuild(JobWorker.publishArtifactDirectory(config.job_id));
+  if(!stored||stored.manifest?.sha256!==build.manifest.sha256)throw conflict('首次发布包已丢失或摘要不一致，请创建新的发布任务');
+  const [accounts,globalSettings]=await Promise.all([SitePublishPlatformService.safeSettings(siteId),PlatformSettingsService.safeSettings()]);
+  if(accounts.npm?.mode==='disabled')throw badRequest('请先为该发布页选择 npm 账号来源');
+  const npmSettings=accounts.npm.mode==='site'?accounts.npm.settings:globalSettings.npm;
+  const githubSettings=accounts.github?.mode==='site'?accounts.github.settings:{};
+  if(!npmSettings?.username)throw badRequest('请先在平台与告警设置中填写 npm 用户名');
+  try{
+    const result=await NpmBootstrapService.runExclusive(siteId,()=>NpmBootstrapService.bootstrapNpmPackage({
+      token,expectedUsername:npmSettings.username,registry:npmSettings.registry,packageName:build.npm_package_name,
+      version:build.npm_version,expectedSha256:build.manifest.sha256,directory:stored.directory,
+      githubRepo:build.github_repo||config.github_repo,workflowFile:githubSettings.workflow_file||'publish-npm.yml'
+    }));
+    await transaction(async client=>{
+      await client.query(`UPDATE publish_pages SET npm_bootstrap_status='published',npm_bootstrap_version=$2,
+        npm_bootstrap_published_at=NOW(),npm_bootstrap_last_error='',updated_at=NOW() WHERE site_id=$1`,[siteId,result.version]);
+      await ControlService.audit(actor(req),'npm.bootstrap.publish','site',siteId,{job_id:config.job_id,package:result.package,version:result.version,already_published:result.already_published},req.ip,client);
+    });
+    return ok(res,result,'npm 首次发布成功，请继续配置 Trusted Publisher',201);
+  }catch(error){
+    const message=String(error.message||error).replaceAll(token,'[REDACTED]').replace(/npm_[A-Za-z0-9_-]+/g,'[REDACTED]').slice(0,1000);
+    await query('UPDATE publish_pages SET npm_bootstrap_last_error=$2,updated_at=NOW() WHERE site_id=$1',[siteId,message]).catch(()=>{});
+    throw /正在进行中|已经存在|已完成/.test(message)?conflict(message):badRequest(message);
+  }
 }));
 
 router.get('/jobs', asyncRoute(async(_req,res)=>{const result=await query('SELECT j.*,s.name AS site_name FROM jobs j LEFT JOIN sites s ON s.id=j.site_id ORDER BY j.id DESC LIMIT 100');return ok(res,result.rows);}));

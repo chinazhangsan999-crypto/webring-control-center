@@ -220,6 +220,10 @@ async function runPublishWorkflow(job, dependencies = {}) {
     }
     const cdns = platforms.npm?.cdns || [];
     const notion = platforms.notion;
+    if(platforms.npm?.status==='succeeded'&&build.npm_version){
+      await query(`UPDATE publish_pages SET npm_bootstrap_status='oidc_verified',npm_oidc_verified_at=NOW(),npm_bootstrap_last_error='',updated_at=NOW()
+        WHERE site_id=$1 AND npm_bootstrap_status<>'oidc_verified' AND (npm_bootstrap_version='' OR npm_bootstrap_version<>$2)`,[job.site_id,build.npm_version]);
+    }
     if (cdns.length && build.npm_version) {
       await transaction(async client => {
         for (const item of cdns) {

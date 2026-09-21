@@ -72,3 +72,11 @@ test('站点级发布平台迁移隔离账号模式与加密凭据', () => {
   assert.match(sql, /credential_version/);
   assert.match(sql, /WHEN platform='github'.*THEN 'global'/s);
 });
+
+test('npm 首次发布迁移只保存流程状态，不保存临时 Token', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'src', 'migrations', '012_npm_bootstrap.sql'), 'utf8');
+  assert.match(sql, /npm_bootstrap_status/);
+  assert.match(sql, /npm_bootstrap_version/);
+  assert.match(sql, /npm_oidc_verified_at/);
+  assert.doesNotMatch(sql, /token/i);
+});
