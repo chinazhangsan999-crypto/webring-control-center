@@ -20,9 +20,16 @@ test('Notion 同步只写入受控区块并保留可点击入口', async () => {
     if (String(url).includes('/children')) return new Response(JSON.stringify({ results: [{ id: 'new-block' }] }), { status: 200 });
     throw new Error(`未覆盖请求：${url}`);
   };
-  const result = await syncNotionPage({ token: 'secret', pageId: '0123456789abcdef0123456789abcdef', publicUrl: 'https://workspace.notion.site/publish', previousBlockId: 'old-block', siteName: '测试站', permanentUrl: 'https://go.example.com/', githubPagesUrl: 'https://owner.github.io/site/', entries: [{ name: '主站', url: 'https://site.example.com/' }], sha256: 'a'.repeat(64) }, { fetchImpl });
+  const npmPageUrls = [
+    { provider: 'unpkg', page_entry: true, entry_primary: true, url: 'https://unpkg.com/link-status-page@latest/index.html' },
+    { provider: 'esm', page_entry: true, entry_primary: false, url: 'https://esm.sh/link-status-page@latest/index.html' }
+  ];
+  const result = await syncNotionPage({ token: 'secret', pageId: '0123456789abcdef0123456789abcdef', publicUrl: 'https://workspace.notion.site/publish', previousBlockId: 'old-block', siteName: '测试站', permanentUrl: 'https://go.example.com/', githubPagesUrl: 'https://owner.github.io/site/', npmPageUrls, entries: [{ name: '主站', url: 'https://site.example.com/' }], sha256: 'a'.repeat(64) }, { fetchImpl });
   assert.equal(result.sync_block_id, 'new-block');
   assert.equal(calls.filter(item => item.method === 'PATCH').length, 2);
-  assert.match(JSON.stringify(calls.at(-1).body), /总后台自动同步内容/);
+  assert.match(JSON.stringify(calls.at(-1).body), /最新访问入口/);
+  assert.match(JSON.stringify(calls.at(-1).body), /npm 网页入口/);
+  assert.match(JSON.stringify(calls.at(-1).body), /esm\.sh 网页入口/);
+  assert.match(JSON.stringify(calls.at(-1).body), /https:\/\/esm\.sh\/link-status-page@latest\/index\.html/);
   assert.match(JSON.stringify(buildManagedBlocks({ siteName: '测试站', entries: [{ name: '主站', url: 'https://site.example.com' }] })), /site\.example\.com/);
 });

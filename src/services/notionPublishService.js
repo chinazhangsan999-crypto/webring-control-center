@@ -30,18 +30,25 @@ function richText(content, href = '') {
   return { type: 'text', text: { content: text, ...(href ? { link: { url: href } } : {}) } };
 }
 
-function buildManagedBlocks({ siteName, permanentUrl, githubPagesUrl, npmPageUrl, entries = [], generatedAt, sha256 }) {
+function buildManagedBlocks({ siteName, permanentUrl, githubPagesUrl, npmPageUrl, npmPageUrls = [], entries = [], generatedAt, sha256 }) {
+  const npmLinks = Array.isArray(npmPageUrls)
+    ? npmPageUrls.filter(item => item?.page_entry === true && /^https:\/\//i.test(String(item.url || ''))).map(item => [
+      item.provider === 'esm' ? 'esm.sh 网页入口' : item.provider === 'unpkg' ? 'npm 网页入口' : String(item.label || 'npm 网页入口').slice(0, 80),
+      item.url
+    ])
+    : [];
+  if (!npmLinks.length && /^https:\/\//i.test(String(npmPageUrl || ''))) npmLinks.push(['npm 网页入口', npmPageUrl]);
   const links = [
     ['自定义永久发布域名', permanentUrl],
     ['GitHub Pages 发布地址', githubPagesUrl],
-    ['npm 网页入口', npmPageUrl]
+    ...npmLinks
   ].filter(([, url]) => /^https:\/\//i.test(String(url || '')));
   const entryBlocks = entries.slice(0, 80).filter(item => /^https?:\/\//i.test(String(item?.url || ''))).map(item => ({
     object: 'block', type: 'bulleted_list_item', bulleted_list_item: { rich_text: [richText(`${String(item.name || '访问入口').slice(0, 120)}：`, ''), richText(String(item.url), String(item.url))] }
   }));
   return [{
     object: 'block', type: 'toggle', toggle: {
-      rich_text: [richText(`总后台自动同步内容 · ${String(sha256 || '').slice(0, 12) || '待生成'}`)],
+      rich_text: [richText(`最新访问入口 · ${String(sha256 || '').slice(0, 12) || '待生成'}`)],
       children: [
         { object: 'block', type: 'heading_2', heading_2: { rich_text: [richText(`${String(siteName || '导航站').slice(0, 100)} · 最新访问入口`)] } },
         ...links.map(([label, url]) => ({ object: 'block', type: 'bulleted_list_item', bulleted_list_item: { rich_text: [richText(`${label}：`), richText(url, url)] } })),

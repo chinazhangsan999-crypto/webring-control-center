@@ -109,7 +109,7 @@ async function buildPublishPage(job, options = {}) {
   const artifactDirectory = publishArtifactDirectory(job.id);
   const stored = await loadStoredPublishBuild(artifactDirectory);
   if (stored) return stored;
-  const { site, bundle, entries, npmLines, npmPrimary } = await preparePublishPage(job.site_id, {
+  const { site, bundle, entries, npmLines, npmPrimary, npmUrls } = await preparePublishPage(job.site_id, {
     publishRevision: job.payload?.publish_revision,
     nodesRevision: job.payload?.nodes_revision,
     generatedAt: options.generatedAt
@@ -129,7 +129,7 @@ async function buildPublishPage(job, options = {}) {
   }
   const html = bundle['index.html'];
   const npmEntryProvider = resolveNpmPageEntryProvider(npmLines, npmPrimary);
-  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, notion_enabled: site.notion_enabled, notion_sync_enabled: site.notion_sync_enabled, notion_page_id: site.notion_page_id, notion_public_url: site.notion_public_url, notion_sync_block_id: site.notion_sync_block_id, notion_site_name: site.name, notion_entries: entries, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled && npmEntryProvider ? npmPageUrl(site.npm_package_name, 'latest', npmEntryProvider) : '', npm_cdn_lines: site.npm_enabled ? npmLines : [], npm_primary_cdn: site.npm_enabled ? npmPrimary : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
+  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, notion_enabled: site.notion_enabled, notion_sync_enabled: site.notion_sync_enabled, notion_page_id: site.notion_page_id, notion_public_url: site.notion_public_url, notion_sync_block_id: site.notion_sync_block_id, notion_site_name: site.name, notion_entries: entries, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled && npmEntryProvider ? npmPageUrl(site.npm_package_name, 'latest', npmEntryProvider) : '', npm_page_urls: site.npm_enabled ? npmUrls.filter(item => item.page_entry) : [], npm_cdn_lines: site.npm_enabled ? npmLines : [], npm_primary_cdn: site.npm_enabled ? npmPrimary : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
   await saveStoredPublishBuild(artifactDirectory, build);
   return build;
 }
@@ -184,6 +184,7 @@ async function runPublishWorkflow(job, dependencies = {}) {
       notionSiteName: build.notion_site_name,
       notionEntries: build.notion_entries,
       npmPageUrl: build.npm_page_url,
+      npmPageUrls: build.npm_page_urls,
       generatedAt: build.manifest.generated_at,
       credentials: await PlatformSettingsService.deploymentCredentials()
     }, previous.platforms || {}, {

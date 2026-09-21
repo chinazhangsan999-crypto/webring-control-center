@@ -402,6 +402,7 @@ async function deployDualPlatform(input, previous = {}, dependencies = {}) {
         permanentUrl: input.permanentUrl,
         githubPagesUrl: input.githubPagesUrl,
         npmPageUrl: input.npmPageUrl,
+        npmPageUrls: input.npmPageUrls,
         entries: input.notionEntries,
         generatedAt: input.generatedAt,
         sha256: input.sha256
