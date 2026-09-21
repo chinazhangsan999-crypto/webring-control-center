@@ -112,6 +112,26 @@ test('任务重试只执行上次失败的平台', async () => {
   assert.equal(result.cloudflare.status, 'succeeded');
 });
 
+test('禁用的平台不会执行，也不会让整轮发布失败', async () => {
+  let githubCalls = 0;
+  let cloudflareCalls = 0;
+  const result = await deployDualPlatform({
+    githubPagesUrl: 'https://owner.github.io/publish/',
+    sha256: 'f'.repeat(64),
+    enabledPlatforms: { github: true, cloudflare: false, npm: false, notion: false },
+    accountSources: { github: 'site', cloudflare: 'disabled', npm: 'disabled', notion: 'disabled' }
+  }, {}, {
+    deployGithub: async () => { githubCalls += 1; return { commit_sha: 'commit' }; },
+    deployCloudflare: async () => { cloudflareCalls += 1; },
+    verify: async () => ({ verified: true })
+  });
+  assert.equal(githubCalls, 1);
+  assert.equal(cloudflareCalls, 0);
+  assert.equal(result.github.account_source, 'site');
+  assert.equal(result.cloudflare.status, 'skipped');
+  assert.equal(result.cloudflare.account_source, 'disabled');
+});
+
 test('Notion 同步是独立发布通道，失败不会改写其他平台结果', async () => {
   await assert.rejects(() => deployDualPlatform({ githubPagesUrl: 'https://owner.github.io/publish/', permanentUrl: 'https://go.example.com/', sha256: 'e'.repeat(64), notionSyncEnabled: true, notionPageId: '0123456789abcdef0123456789abcdef', notionPublicUrl: 'https://workspace.notion.site/publish', credentials: { notionToken: 'secret' } }, {}, {
     deployGithub: async () => ({ commit_sha: 'commit' }),

@@ -62,6 +62,10 @@ async function createSite(payload, actor, ip) {
     await client.query('INSERT INTO site_credentials(site_id, secret_hash, secret_hint) VALUES ($1, $2, $3)', [row.id, sha256(rawSecret), rawSecret.slice(-6)]);
     await client.query('INSERT INTO site_revisions(site_id) VALUES ($1)', [row.id]);
     await client.query('INSERT INTO publish_pages(site_id) VALUES ($1)', [row.id]);
+    for (const platform of ['cloudflare', 'github', 'npm', 'notion']) {
+      await client.query(`INSERT INTO site_publish_platforms(site_id,platform,account_mode)
+        VALUES($1,$2,'disabled') ON CONFLICT(site_id,platform) DO NOTHING`, [row.id, platform]);
+    }
     for (const slot of AD_POSITIONS) {
       await client.query('INSERT INTO ad_slot_policies(site_id, slot) VALUES ($1, $2)', [row.id, slot]);
     }

@@ -5,8 +5,10 @@ const { classifyJobError } = require('./jobQueueService');
 const { npmCdnUrls } = require('./npmPublishService');
 
 function platformLine(name, value) {
-  const labels = { succeeded: '\u5df2\u6210\u529f', failed: '\u5931\u8d25', running: '\u6267\u884c\u4e2d', pending: '\u672a\u6267\u884c' };
-  return `${name}\uff1a${labels[value?.status] || '\u672a\u6267\u884c'}`;
+  const labels = { succeeded: '\u5df2\u6210\u529f', failed: '\u5931\u8d25', running: '\u6267\u884c\u4e2d', pending: '\u672a\u6267\u884c', skipped: '\u672a\u542f\u7528' };
+  const sources = { global: '\u5168\u5c40\u8d26\u53f7', site: '\u672c\u7ad9\u72ec\u7acb\u8d26\u53f7', disabled: '\u672a\u542f\u7528' };
+  const source = value?.account_source ? `\uff08${sources[value.account_source] || value.account_source}\uff09` : '';
+  return `${name}\uff1a${labels[value?.status] || '\u672a\u6267\u884c'}${source}`;
 }
 
 async function enqueueAlert(payload, siteId = null, client = null) {
@@ -41,7 +43,7 @@ async function enqueueJobAlert(job, outcome, result = {}, error = null) {
   }
   if (job.type === 'publish.deploy') {
     const platforms = result?.platforms || error?.progress?.platforms || {};
-    lines.push(platformLine('Cloudflare', platforms.cloudflare), platformLine('GitHub', platforms.github), platformLine('npm', platforms.npm));
+    lines.push(platformLine('Cloudflare', platforms.cloudflare), platformLine('GitHub', platforms.github), platformLine('npm', platforms.npm), platformLine('Notion', platforms.notion));
   }
   if (!success) {
     lines.push(`错误分类：${classifyJobError(error)}`);

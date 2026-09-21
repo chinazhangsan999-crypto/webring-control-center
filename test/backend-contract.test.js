@@ -59,15 +59,16 @@ test('永久发布页生成独立静态包并支持 npm 第三发布地址', () 
   const adminRoutes = source('src/routes/admin.js');
   const worker = source('src/services/jobWorker.js');
   const adminApp = source('public/app.js');
-  assert.match(adminRoutes, /请同时填写自定义永久发布域名和 GitHub Pages 地址/);
+  assert.match(adminRoutes, /启用 Cloudflare 时必须填写自定义永久发布域名/);
+  assert.match(adminRoutes, /启用 GitHub 时必须填写 GitHub Pages 地址/);
   assert.match(adminRoutes, /自定义永久发布域名不能使用 pages\.dev 原生地址/);
   assert.match(adminRoutes, /GitHub Pages 地址必须使用 github\.io 原生地址/);
   assert.match(adminRoutes, /parsePublishPayload/);
   assert.match(worker, /renderPublishBundle/);
   assert.match(worker, /site\.public_url/);
-  assert.match(adminApp, /发布完整页面到多平台/);
-  assert.match(adminApp, /Notion 公开发布页/);
-  assert.match(adminApp, /npm 完整发布页/);
+  assert.match(adminApp, /发布已启用平台/);
+  assert.match(adminApp, /Notion 发布页/);
+  assert.match(adminApp, /npm 发布页/);
   assert.match(adminApp, /主网页入口/);
   assert.match(adminApp, /包分发/);
   assert.match(adminApp, /publish-open/);
@@ -134,4 +135,21 @@ test('平台与告警设置通过后台 API 管理，npm 支持四条分发线�
   assert.match(npmRoleMigration, /package_available/);
   assert.match(npmRoleMigration, /package_mirror/);
   for (const provider of ['npmmirror', 'jsdelivr', 'unpkg', 'esm']) assert.match(npm, new RegExp(`${provider}:`));
+});
+
+test('站点发布平台支持禁用、全局与独立账号且不静默回退', () => {
+  const migration = source('src/migrations/011_site_publish_platform_accounts.sql');
+  const service = source('src/services/sitePublishPlatformService.js');
+  const admin = source('src/routes/admin.js');
+  const app = source('public/app.js');
+  assert.match(migration, /account_mode TEXT NOT NULL DEFAULT 'disabled'/);
+  assert.match(migration, /CHECK \(account_mode IN \('disabled','global','site'\)\)/);
+  assert.match(migration, /site_publish_secrets/);
+  assert.match(service, /请填写.*本站独立账号凭据/);
+  assert.doesNotMatch(service, /siteToken\s*\|\|\s*globalToken/);
+  assert.match(admin, /platform_bindings/);
+  assert.match(admin, /publish\/platforms\/:provider\/test/);
+  assert.match(app, /使用全局账号/);
+  assert.match(app, /使用本站独立账号/);
+  assert.match(app, /系统不会自动回退到全局账号/);
 });

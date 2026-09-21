@@ -179,9 +179,20 @@ tr:last-child td { border-bottom: 0; }
 .cdn-route-copy strong { display: block; overflow-wrap: anywhere; font-size: 13px; }
 .cdn-route-state { display: flex; flex: none; flex-direction: column; align-items: flex-end; gap: 4px; }
 .primary-badge { background: #e9eeff; color: var(--primary); }
+.platform-account-stack { display: grid; gap: 9px; }
+.platform-account-card { padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcff; }
+.platform-account-card > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.platform-account-card > header strong, .platform-account-card > header span { display: block; }
+.platform-account-card > header strong { font-size: 13px; }
+.platform-account-card > header span { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.platform-account-card > header select { width: min(190px, 45%); }
+.platform-account-card fieldset { margin: 9px 0 0; padding: 8px; border: 1px dashed #cfd8e8; border-radius: 8px; }
+.platform-account-card fieldset[hidden] { display: none; }
+.platform-account-card legend { padding: 0 5px; color: var(--primary); font-size: 10px; font-weight: 750; }
+.publish-content-fields { margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); }
 
 .toast { position: fixed; right: 16px; bottom: 16px; z-index: 100; max-width: min(380px, calc(100vw - 32px)); padding: 9px 12px; border-radius: 10px; background: #253250; box-shadow: 0 14px 34px rgba(37, 50, 80, .22); color: #fff; font-size: 12px; }
-dialog { width: min(560px, calc(100vw - 20px)); max-height: calc(100dvh - 24px); padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 18px 48px rgba(23, 33, 59, .19); color: var(--text); }
+dialog { width: min(720px, calc(100vw - 20px)); max-height: calc(100dvh - 24px); padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 18px 48px rgba(23, 33, 59, .19); color: var(--text); }
 dialog::backdrop { background: rgba(23, 33, 59, .36); backdrop-filter: blur(4px); }
 .modal-card > header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .modal-card .eyebrow { margin: 0; }
@@ -249,6 +260,8 @@ dialog::backdrop { background: rgba(23, 33, 59, .36); backdrop-filter: blur(4px)
   .span-2 { grid-column: auto; }
   .choice-grid { grid-template-columns: 1fr; }
   .settings-grid, .settings-grid--alerts, .cdn-choice-list, .cdn-route-grid { grid-template-columns: 1fr; }
+  .platform-account-card > header { align-items: stretch; flex-direction: column; }
+  .platform-account-card > header select { width: 100%; }
   .login-card { padding: 20px 16px; }
 }
 

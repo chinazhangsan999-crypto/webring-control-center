@@ -348,49 +348,54 @@ async function verifyPublishedManifest(baseUrl, expectedSha, dependencies = {}) 
 
 async function deployDualPlatform(input, previous = {}, dependencies = {}) {
   const startedAt = new Date().toISOString();
+  const enabled = input.enabledPlatforms || { github: true, cloudflare: true, npm: Boolean(input.npmPackageName), notion: Boolean(input.notionSyncEnabled) };
+  const source = input.accountSources || {};
+  const initial = platform => enabled[platform]
+    ? (previous[platform]?.status === 'succeeded' ? previous[platform] : { status: platform === 'github' || platform === 'cloudflare' ? 'running' : 'pending', account_source: source[platform] || 'global', started_at: startedAt })
+    : { status: 'skipped', account_source: 'disabled', reason: '该站点未启用此平台' };
   const progress = {
-    github: previous.github?.status === 'succeeded' ? previous.github : { status: 'running', started_at: startedAt },
-    cloudflare: previous.cloudflare?.status === 'succeeded' ? previous.cloudflare : { status: 'running', started_at: startedAt },
-    ...(input.npmPackageName ? { npm: previous.npm?.status === 'succeeded' ? previous.npm : { status: 'pending' } } : {}),
-    ...(input.notionSyncEnabled ? { notion: previous.notion?.status === 'succeeded' ? previous.notion : { status: 'pending' } } : {})
+    github: initial('github'),
+    cloudflare: initial('cloudflare'),
+    npm: initial('npm'),
+    notion: initial('notion')
   };
   await dependencies.onProgress?.(progress);
   const tasks = [];
-  if (progress.github.status !== 'succeeded') tasks.push(['github', async () => {
+  if (enabled.github && progress.github.status !== 'succeeded') tasks.push(['github', async () => {
     const deployed = await (dependencies.deployGithub || deployGithubPages)(input, dependencies);
     const verified = await (dependencies.verify || verifyPublishedManifest)(input.githubPagesUrl, input.sha256, dependencies);
-    return { status: 'succeeded', ...deployed, ...verified, finished_at: new Date().toISOString() };
+    return { status: 'succeeded', account_source: source.github || 'global', ...deployed, ...verified, finished_at: new Date().toISOString() };
   }]);
-  if (progress.cloudflare.status !== 'succeeded') tasks.push(['cloudflare', async () => {
+  if (enabled.cloudflare && progress.cloudflare.status !== 'succeeded') tasks.push(['cloudflare', async () => {
     const deployed = await (dependencies.deployCloudflare || deployCloudflarePages)(input, dependencies);
     const verified = await (dependencies.verify || verifyPublishedManifest)(input.permanentUrl, input.sha256, dependencies);
-    return { status: 'succeeded', ...deployed, ...verified, finished_at: new Date().toISOString() };
+    return { status: 'succeeded', account_source: source.cloudflare || 'global', ...deployed, ...verified, finished_at: new Date().toISOString() };
   }]);
   const settled = await Promise.all(tasks.map(([, task]) => task().then(value => ({ value }), error => ({ error }))));
   settled.forEach((item, index) => {
     const platform = tasks[index][0];
     progress[platform] = item.error
-      ? { status: 'failed', error: String(item.error.message || item.error).slice(0, 500), retryable: item.error.retryable !== false, finished_at: new Date().toISOString() }
+      ? { status: 'failed', account_source: source[platform] || 'global', error: String(item.error.message || item.error).slice(0, 500), retryable: item.error.retryable !== false, finished_at: new Date().toISOString() }
       : item.value;
   });
   await dependencies.onProgress?.(progress);
-  if (input.npmPackageName && progress.npm.status !== 'succeeded') {
+  if (enabled.npm && input.npmPackageName && progress.npm.status !== 'succeeded') {
     if (progress.github.status !== 'succeeded') {
-      progress.npm = { status: 'failed', error: 'GitHub Pages 发布失败，未触发 npm OIDC 工作流', retryable: progress.github.retryable !== false, finished_at: new Date().toISOString() };
+      progress.npm = { status: 'failed', account_source: source.npm || 'global', error: 'GitHub Pages 发布失败，未触发 npm OIDC 工作流', retryable: progress.github.retryable !== false, finished_at: new Date().toISOString() };
     } else {
-      progress.npm = { status: 'running', started_at: new Date().toISOString() };
+      progress.npm = { status: 'running', account_source: source.npm || 'global', started_at: new Date().toISOString() };
       await dependencies.onProgress?.(progress);
       try {
         const deployed = await (dependencies.deployNpm || deployNpmPackage)(input, dependencies);
-        progress.npm = { status: 'succeeded', ...deployed, finished_at: new Date().toISOString() };
+        progress.npm = { status: 'succeeded', account_source: source.npm || 'global', ...deployed, finished_at: new Date().toISOString() };
       } catch (error) {
-        progress.npm = { status: 'failed', error: String(error.message || error).slice(0, 500), retryable: error.retryable !== false, finished_at: new Date().toISOString() };
+        progress.npm = { status: 'failed', account_source: source.npm || 'global', error: String(error.message || error).slice(0, 500), retryable: error.retryable !== false, finished_at: new Date().toISOString() };
       }
       await dependencies.onProgress?.(progress);
     }
   }
-  if (input.notionSyncEnabled && progress.notion.status !== 'succeeded') {
-    progress.notion = { status: 'running', started_at: new Date().toISOString() };
+  if (enabled.notion && input.notionSyncEnabled && progress.notion.status !== 'succeeded') {
+    progress.notion = { status: 'running', account_source: source.notion || 'global', started_at: new Date().toISOString() };
     await dependencies.onProgress?.(progress);
     try {
       const synced = await (dependencies.syncNotion || syncNotionPage)({
@@ -407,13 +412,13 @@ async function deployDualPlatform(input, previous = {}, dependencies = {}) {
         generatedAt: input.generatedAt,
         sha256: input.sha256
       }, dependencies);
-      progress.notion = { status: 'succeeded', ...synced, finished_at: new Date().toISOString() };
+      progress.notion = { status: 'succeeded', account_source: source.notion || 'global', ...synced, finished_at: new Date().toISOString() };
     } catch (error) {
-      progress.notion = { status: 'failed', error: String(error.message || error).slice(0, 500), retryable: error.retryable !== false, finished_at: new Date().toISOString() };
+      progress.notion = { status: 'failed', account_source: source.notion || 'global', error: String(error.message || error).slice(0, 500), retryable: error.retryable !== false, finished_at: new Date().toISOString() };
     }
     await dependencies.onProgress?.(progress);
   }
-  const failures = Object.entries(progress).filter(([, result]) => result.status !== 'succeeded');
+  const failures = Object.entries(progress).filter(([, result]) => result.status === 'failed');
   if (failures.length) {
     throw new DeploymentError(failures.map(([platform, result]) => `${platform}: ${result.error}`).join('；'), {
       retryable: failures.some(([, result]) => result.retryable !== false), progress

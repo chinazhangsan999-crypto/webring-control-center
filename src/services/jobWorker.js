@@ -9,6 +9,7 @@ const PublishDeploymentService = require('./publishDeploymentService');
 const AlertService = require('./alertService');
 const JobAlertService = require('./jobAlertService');
 const PlatformSettingsService = require('./platformSettingsService');
+const SitePublishPlatformService = require('./sitePublishPlatformService');
 const { classifyJobError, retryDelaySeconds, completedPublishSteps } = require('./jobQueueService');
 const { npmVersionForJob, npmPageUrl, npmCdnUrls, resolveNpmPageEntryProvider, npmPackageFiles } = require('./npmPublishService');
 
@@ -56,13 +57,16 @@ async function preparePublishPage(siteId, options = {}) {
   }
   const effectiveConfig = await ControlService.resolveSiteConfig(siteId);
   const entries = publishEntries(site, effectiveConfig.nodes);
-  const settings = await PlatformSettingsService.safeSettings();
-  const npmLines = site.npm_cdn_mode === 'custom' ? site.npm_cdn_lines : settings.npm.lines;
-  const npmPrimary = site.npm_cdn_mode === 'custom' ? site.npm_primary_cdn : settings.npm.primary;
-  const npmUrls = site.npm_enabled ? npmCdnUrls(site.npm_package_name, 'latest', npmLines, npmPrimary) : [];
+  const [settings, platformAccounts] = await Promise.all([PlatformSettingsService.safeSettings(), SitePublishPlatformService.safeSettings(siteId)]);
+  const npmAccount = platformAccounts.npm;
+  const inheritedNpm = npmAccount.mode === 'site' ? npmAccount.settings : settings.npm;
+  const npmLines = site.npm_cdn_mode === 'custom' ? site.npm_cdn_lines : inheritedNpm.lines;
+  const npmPrimary = site.npm_cdn_mode === 'custom' ? site.npm_primary_cdn : inheritedNpm.primary;
+  const npmEnabled = npmAccount.mode !== 'disabled' && site.npm_enabled;
+  const npmUrls = npmEnabled ? npmCdnUrls(site.npm_package_name, 'latest', npmLines, npmPrimary) : [];
   const npmUrl = npmUrls.find(item => item.entry_primary)?.url || '';
-  const bundle = renderPublishBundle({ siteName: site.name, siteUrl: site.public_url, logoUrl: site.payload?.logo_url, headline: site.payload?.page_title, description: site.payload?.description, announcement: site.payload?.announcement, permanentUrl: site.permanent_url, githubPagesUrl: site.github_pages_url, notionPublicUrl: site.notion_enabled ? site.notion_public_url : '', npmPageUrl: npmUrl, npmPageUrls: npmUrls, contactEmail: site.contact_email, entries, generatedAt: options.generatedAt });
-  return { site, bundle, entries, npmLines, npmPrimary, npmUrls };
+  const bundle = renderPublishBundle({ siteName: site.name, siteUrl: site.public_url, logoUrl: site.payload?.logo_url, headline: site.payload?.page_title, description: site.payload?.description, announcement: site.payload?.announcement, permanentUrl: platformAccounts.cloudflare.mode !== 'disabled' ? site.permanent_url : '', githubPagesUrl: platformAccounts.github.mode !== 'disabled' ? site.github_pages_url : '', notionPublicUrl: platformAccounts.notion.mode !== 'disabled' && site.notion_enabled ? site.notion_public_url : '', npmPageUrl: npmUrl, npmPageUrls: npmUrls, contactEmail: site.contact_email, entries, generatedAt: options.generatedAt });
+  return { site, bundle, entries, npmLines, npmPrimary, npmUrls, platformAccounts, npmEnabled };
 }
 
 async function renderPublishPreview(siteId) {
@@ -109,13 +113,13 @@ async function buildPublishPage(job, options = {}) {
   const artifactDirectory = publishArtifactDirectory(job.id);
   const stored = await loadStoredPublishBuild(artifactDirectory);
   if (stored) return stored;
-  const { site, bundle, entries, npmLines, npmPrimary, npmUrls } = await preparePublishPage(job.site_id, {
+  const { site, bundle, entries, npmLines, npmPrimary, npmUrls, platformAccounts, npmEnabled } = await preparePublishPage(job.site_id, {
     publishRevision: job.payload?.publish_revision,
     nodesRevision: job.payload?.nodes_revision,
     generatedAt: options.generatedAt
   });
-  const npmVersion = site.npm_enabled ? npmVersionForJob(job.id) : '';
-  if (site.npm_enabled) Object.assign(bundle, npmPackageFiles({ packageName: site.npm_package_name, version: npmVersion, githubRepo: site.github_repo, siteName: site.name }));
+  const npmVersion = npmEnabled ? npmVersionForJob(job.id) : '';
+  if (npmEnabled) Object.assign(bundle, npmPackageFiles({ packageName: site.npm_package_name, version: npmVersion, githubRepo: site.github_repo, siteName: site.name }));
   await fs.rm(artifactDirectory, { recursive: true, force: true });
   await fs.mkdir(artifactDirectory, { recursive: true });
   const names = Object.keys(bundle).filter(name => name !== 'publish-manifest.json');
@@ -129,7 +133,7 @@ async function buildPublishPage(job, options = {}) {
   }
   const html = bundle['index.html'];
   const npmEntryProvider = resolveNpmPageEntryProvider(npmLines, npmPrimary);
-  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, notion_enabled: site.notion_enabled, notion_sync_enabled: site.notion_sync_enabled, notion_page_id: site.notion_page_id, notion_public_url: site.notion_public_url, notion_sync_block_id: site.notion_sync_block_id, notion_site_name: site.name, notion_entries: entries, npm_package_name: site.npm_enabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: site.npm_enabled && npmEntryProvider ? npmPageUrl(site.npm_package_name, 'latest', npmEntryProvider) : '', npm_page_urls: site.npm_enabled ? npmUrls.filter(item => item.page_entry) : [], npm_cdn_lines: site.npm_enabled ? npmLines : [], npm_primary_cdn: site.npm_enabled ? npmPrimary : '', publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
+  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, notion_enabled: platformAccounts.notion.mode !== 'disabled' && site.notion_enabled, notion_sync_enabled: platformAccounts.notion.mode !== 'disabled' && site.notion_sync_enabled, notion_page_id: site.notion_page_id, notion_public_url: site.notion_public_url, notion_sync_block_id: site.notion_sync_block_id, notion_site_name: site.name, notion_entries: entries, npm_package_name: npmEnabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: npmEnabled && npmEntryProvider ? npmPageUrl(site.npm_package_name, 'latest', npmEntryProvider) : '', npm_page_urls: npmEnabled ? npmUrls.filter(item => item.page_entry) : [], npm_cdn_lines: npmEnabled ? npmLines : [], npm_primary_cdn: npmEnabled ? npmPrimary : '', platform_modes: Object.fromEntries(Object.entries(platformAccounts).map(([name,value])=>[name,value.mode])), publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
   await saveStoredPublishBuild(artifactDirectory, build);
   return build;
 }
@@ -146,6 +150,10 @@ async function saveNotionState(siteId, build, notion) {
 
 async function runPublishWorkflow(job, dependencies = {}) {
   const previous = job.result && typeof job.result === 'object' ? job.result : {};
+  const resolvedPlatforms = await SitePublishPlatformService.resolveForDeployment(job.site_id);
+  if (job.payload?.platform_bindings && !SitePublishPlatformService.bindingsMatch(job.payload.platform_bindings, resolvedPlatforms.bindings)) {
+    throw new PublishDeploymentService.DeploymentError('发布平台账号来源或配置版本已变化，请创建新的发布任务', { retryable: false });
+  }
   if (job.payload?.publish_revision !== undefined || job.payload?.nodes_revision !== undefined) {
     const current = await one('SELECT publish_revision,nodes_revision FROM site_revisions WHERE site_id=$1', [job.site_id]);
     if (!current || Number(job.payload.publish_revision) !== Number(current.publish_revision) || Number(job.payload.nodes_revision) !== Number(current.nodes_revision)) {
@@ -158,11 +166,17 @@ async function runPublishWorkflow(job, dependencies = {}) {
     nodes_revision: job.payload?.nodes_revision ?? build.nodes_revision
   };
   if (job.payload?.publish_revision === undefined || job.payload?.nodes_revision === undefined) {
-    job.payload = { ...(job.payload || {}), ...expectedRevisions };
+    job.payload = { ...(job.payload || {}), ...expectedRevisions, platform_bindings: resolvedPlatforms.bindings };
     await query('UPDATE jobs SET payload=$2::jsonb WHERE id=$1', [job.id, JSON.stringify(job.payload)]);
   }
   const progress = { ...previous, build };
-  const progressTotal = 3 + (build.npm_package_name ? 1 : 0) + (build.notion_sync_enabled ? 1 : 0);
+  const enabledPlatforms = {
+    github: resolvedPlatforms.platforms.github.enabled,
+    cloudflare: resolvedPlatforms.platforms.cloudflare.enabled,
+    npm: resolvedPlatforms.platforms.npm.enabled && Boolean(build.npm_package_name),
+    notion: resolvedPlatforms.platforms.notion.enabled && Boolean(build.notion_sync_enabled)
+  };
+  const progressTotal = 1 + Object.values(enabledPlatforms).filter(Boolean).length;
   await saveJobProgress(job.id, progress, 1, progressTotal);
   try {
     const platforms = await PublishDeploymentService.deployDualPlatform({
@@ -186,7 +200,16 @@ async function runPublishWorkflow(job, dependencies = {}) {
       npmPageUrl: build.npm_page_url,
       npmPageUrls: build.npm_page_urls,
       generatedAt: build.manifest.generated_at,
-      credentials: await PlatformSettingsService.deploymentCredentials()
+      enabledPlatforms,
+      accountSources: Object.fromEntries(Object.entries(resolvedPlatforms.platforms).map(([name,value])=>[name,value.source])),
+      credentials: {
+        githubToken: resolvedPlatforms.platforms.github.credentials.token || '',
+        githubBranch: resolvedPlatforms.platforms.github.settings.branch || 'gh-pages',
+        cloudflareToken: resolvedPlatforms.platforms.cloudflare.credentials.token || '',
+        cloudflareAccountId: resolvedPlatforms.platforms.cloudflare.settings.account_id || '',
+        cloudflareBranch: resolvedPlatforms.platforms.cloudflare.settings.branch || 'main',
+        notionToken: resolvedPlatforms.platforms.notion.credentials.token || ''
+      }
     }, previous.platforms || {}, {
       ...dependencies,
       onProgress: async platforms => saveJobProgress(job.id, { ...progress, platforms }, completedPublishSteps(platforms), progressTotal)

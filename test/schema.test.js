@@ -63,3 +63,12 @@ test('npm 发布页迁移增加启用状态和包名', () => {
   assert.match(sql, /npm_enabled\s+BOOLEAN\s+NOT NULL\s+DEFAULT FALSE/i);
   assert.match(sql, /npm_package_name\s+TEXT\s+NOT NULL\s+DEFAULT ''/i);
 });
+
+test('站点级发布平台迁移隔离账号模式与加密凭据', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'src', 'migrations', '011_site_publish_platform_accounts.sql'), 'utf8');
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS site_publish_platforms/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS site_publish_secrets/);
+  assert.match(sql, /UNIQUE|PRIMARY KEY \(site_id, platform\)/i);
+  assert.match(sql, /credential_version/);
+  assert.match(sql, /WHEN platform='github'.*THEN 'global'/s);
+});
