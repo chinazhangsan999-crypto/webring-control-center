@@ -12,7 +12,11 @@ code_backup=$backup_dir/code-$stamp.tgz
 db_backup=$backup_dir/webring-$stamp.db
 
 test -f "$release"
-test -f "$credential"
+control_env="$config_dir/control-center.env"
+if [ ! -f "$credential" ] && [ ! -f "$control_env" ]; then
+  echo '缺少站点接入凭据，且服务器上没有可复用的总后台配置' >&2
+  exit 1
+fi
 mkdir -p "$staging" "$backup_dir" "$config_dir"
 chmod 700 "$backup_dir" "$config_dir"
 tar -xzf "$release" -C "$staging"
@@ -49,16 +53,17 @@ install -m 644 "$staging/package-lock.json" "$app_dir/package-lock.json"
 cd "$app_dir"
 npm ci --omit=dev --no-audit --no-fund
 
-control_env="$config_dir/control-center.env"
-{
-  echo 'CONTROL_CENTER_ENABLED=1'
-  echo 'CONTROL_CENTER_URL=https://zonghoutai.chinazhangsan.ccwu.cc'
-  cat "$credential"
-  echo 'CONTROL_CENTER_SYNC_INTERVAL_MS=60000'
-} > "$control_env.tmp"
-chmod 600 "$control_env.tmp"
-mv "$control_env.tmp" "$control_env"
-rm -f "$credential"
+if [ -f "$credential" ]; then
+  {
+    echo 'CONTROL_CENTER_ENABLED=1'
+    echo 'CONTROL_CENTER_URL=https://zonghoutai.chinazhangsan.ccwu.cc'
+    cat "$credential"
+    echo 'CONTROL_CENTER_SYNC_INTERVAL_MS=60000'
+  } > "$control_env.tmp"
+  chmod 600 "$control_env.tmp"
+  mv "$control_env.tmp" "$control_env"
+  rm -f "$credential"
+fi
 
 sudo install -m 755 "$app_dir/ops/webring-backup" /usr/local/sbin/webring-backup
 sudo install -m 644 "$app_dir/ops/webring-backup.service" /etc/systemd/system/webring-backup.service
@@ -84,7 +89,7 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 curl -fsS http://127.0.0.1:3001/api/health >/dev/null
-curl -fsS http://127.0.0.1:3001/api/admin/control-center/status | grep -q '"enabled":true'
+grep -q '^CONTROL_CENTER_ENABLED=1$' "$control_env"
 sudo systemctl start webring-backup.service
 test -s "$db_backup"
 

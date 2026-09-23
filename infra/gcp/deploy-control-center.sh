@@ -16,7 +16,7 @@ npm ci --no-audit --no-fund
 npm run test:local
 
 cd "$app_dir"
-tar -czf "$code_backup" package.json package-lock.json compose.yaml public src packages scripts infra test 2>/dev/null || true
+tar -czf "$code_backup" package.json package-lock.json compose.yaml assets public src packages scripts infra test 2>/dev/null || true
 
 rollback() {
   echo 'CONTROL_CENTER_DEPLOYMENT_FAILED_ROLLING_BACK' >&2
@@ -26,7 +26,7 @@ rollback() {
 }
 trap rollback ERR
 
-for directory in public src packages scripts infra test; do
+for directory in assets public src packages scripts infra test; do
   rsync -a --delete "$staging/$directory/" "$app_dir/$directory/"
 done
 install -m 644 "$staging/package.json" "$app_dir/package.json"

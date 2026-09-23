@@ -6,6 +6,7 @@ const express = require('express');
 const authRouter = require('./routes/auth');
 const adminRouter = require('./routes/admin');
 const agentRouter = require('./routes/agent');
+const adEdgeRouter = require('./routes/adEdge');
 const { fail } = require('./lib/http');
 const { query } = require('./db');
 const { TRUST_PROXY } = require('./config');
@@ -29,6 +30,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use('/api/auth', authRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/agent', agentRouter);
+app.use('/api/internal/ad-edge', adEdgeRouter);
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 app.get('/api/ready', async (_req, res) => {
   try {

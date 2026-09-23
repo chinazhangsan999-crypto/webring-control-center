@@ -107,3 +107,27 @@ test('广告快照接受安全优先级并保留代码原文', () => {
   invalid.ads[0].priority = 1.5;
   assert.throws(() => validateConfigSnapshot(invalid), /广告优先级/);
 });
+
+test('广告 Edge 快照不下发代码原文并携带站点级加载配置', () => {
+  const snapshot = validSnapshot({
+    ad_edge: {
+      enabled: true,
+      profile_id: '9',
+      origin: 'https://ad.example.com',
+      ticket_key: 'A'.repeat(43),
+      worker_version: '2.0.0'
+    }
+  });
+  snapshot.ads[0] = {
+    ...snapshot.ads[0],
+    ad_code: '',
+    code_delivery: 'edge',
+    render_mode: 'sandbox',
+    sandbox_options: { initial_height: 120 },
+    ad_edge: { profile_id: '9', origin: 'https://ad.example.com' }
+  };
+  assert.equal(validateConfigSnapshot(snapshot).ads[0].ad_code, '');
+  const leaked = structuredClone(snapshot);
+  leaked.ads[0].ad_code = '<script>leak()</script>';
+  assert.throws(() => validateConfigSnapshot(leaked), /不得携带代码原文/);
+});

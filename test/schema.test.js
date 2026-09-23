@@ -80,3 +80,8 @@ test('npm 首次发布迁移只保存流程状态，不保存临时 Token', () =
   assert.match(sql, /npm_oidc_verified_at/);
   assert.doesNotMatch(sql, /token/i);
 });
+
+test('永久发布页排序迁移保存独立权重配置', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'src', 'migrations', '014_publish_link_sorting.sql'), 'utf8');
+  assert.match(sql, /publish_link_weights\s+JSONB\s+NOT NULL/i);
+});

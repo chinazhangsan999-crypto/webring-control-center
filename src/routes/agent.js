@@ -57,6 +57,31 @@ router.get('/config', asyncRoute(async (req, res) => {
   return ok(res, snapshot);
 }));
 
+router.put('/local-code-ads/:localAdId', asyncRoute(async (req, res) => {
+  const localAdId = Number(req.params.localAdId);
+  if (!Number.isSafeInteger(localAdId) || localAdId <= 0) return fail(res, '本地广告编号不合法', 400);
+  const title = String(req.body?.title || '').trim().slice(0, 80);
+  const adCode = String(req.body?.ad_code || '');
+  const integrity = String(req.body?.integrity_sha256 || '').toLowerCase();
+  const renderMode = req.body?.render_mode === 'sandbox' ? 'sandbox' : 'direct';
+  const expectedIntegrity = require('node:crypto').createHash('sha256').update(adCode).digest('hex');
+  if (!adCode.trim()) return fail(res, '代码广告内容不能为空', 400);
+  if (!/^[a-f0-9]{64}$/.test(integrity) || integrity !== expectedIntegrity) return fail(res, '代码广告完整性校验失败', 400);
+  await query(`INSERT INTO site_ad_payloads(site_id,local_ad_id,title,ad_code,integrity_sha256,render_mode,enabled,updated_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
+    ON CONFLICT(site_id,local_ad_id) DO UPDATE SET title=EXCLUDED.title,ad_code=EXCLUDED.ad_code,
+      integrity_sha256=EXCLUDED.integrity_sha256,render_mode=EXCLUDED.render_mode,enabled=EXCLUDED.enabled,updated_at=NOW()`,
+  [req.site.id, localAdId, title, adCode, integrity, renderMode, req.body?.enabled === true]);
+  return ok(res, { local_ad_id: localAdId, integrity_sha256: integrity, render_mode: renderMode }, '本地代码广告载荷已同步');
+}));
+
+router.delete('/local-code-ads/:localAdId', asyncRoute(async (req, res) => {
+  const localAdId = Number(req.params.localAdId);
+  if (!Number.isSafeInteger(localAdId) || localAdId <= 0) return fail(res, '本地广告编号不合法', 400);
+  await query('DELETE FROM site_ad_payloads WHERE site_id=$1 AND local_ad_id=$2', [req.site.id, localAdId]);
+  return ok(res, null, '本地代码广告载荷已删除');
+}));
+
 router.post('/sso/redeem', asyncRoute(async (req, res) => {
   const { ticket } = validateSsoRedeemRequest(req.body);
   let result;

@@ -13,6 +13,7 @@ const JobAlertService = require('../services/jobAlertService');
 const PlatformSettingsService = require('../services/platformSettingsService');
 const SitePublishPlatformService = require('../services/sitePublishPlatformService');
 const NpmBootstrapService = require('../services/npmBootstrapService');
+const AdEdgeService = require('../services/adEdgeService');
 const { normalizePackageName, normalizeCdnLines, npmCdnUrls, npmPageUrl, resolveNpmPageEntryProvider } = require('../services/npmPublishService');
 const { normalizePageId, normalizePublicUrl, verifyNotionToken } = require('../services/notionPublishService');
 const { badRequest, notFound, conflict } = require('../lib/errors');
@@ -329,6 +330,21 @@ router.delete('/ads/:id', asyncRoute(async (req, res) => {
   return ok(res, null, '广告已删除');
 }));
 
+router.get('/ad-edge-profiles', asyncRoute(async (_req, res) => ok(res, await AdEdgeService.listProfiles())));
+router.post('/ad-edge-profiles', asyncRoute(async (req, res) => {
+  const profile = await AdEdgeService.saveProfile(null, req.body || {}, actor(req), req.ip, ControlService.audit);
+  return ok(res, profile, '广告 API 配置已创建', 201);
+}));
+router.put('/ad-edge-profiles/:id', asyncRoute(async (req, res) => {
+  const profile = await AdEdgeService.saveProfile(numericId(req.params.id), req.body || {}, actor(req), req.ip, ControlService.audit);
+  return ok(res, profile, '广告 API 配置已更新');
+}));
+router.post('/ad-edge-profiles/:id/deploy', asyncRoute(async (req, res) => {
+  const profile = await AdEdgeService.deployProfile(numericId(req.params.id));
+  await ControlService.bumpRevisions('ads');
+  return ok(res, profile, '广告 API Worker 已部署');
+}));
+
 router.get('/sites/:id/ad-policies', asyncRoute(async (req,res)=>{
   const result=await query('SELECT slot,policy FROM ad_slot_policies WHERE site_id=$1 ORDER BY slot',[numericId(req.params.id)]); return ok(res,result.rows);
 }));
@@ -393,7 +409,7 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
   if(modes.github!=='disabled'&&!github)throw badRequest('启用 GitHub 时必须填写 GitHub Pages 地址');
   if(permanent&&new URL(permanent).hostname.toLowerCase().endsWith('.pages.dev'))throw badRequest('自定义永久发布域名不能使用 pages.dev 原生地址');
   if(github&&!new URL(github).hostname.toLowerCase().endsWith('.github.io'))throw badRequest('GitHub Pages 地址必须使用 github.io 原生地址');
-  const repo=String(req.body?.github_repo||'').trim().slice(0,200); const cf=String(req.body?.cloudflare_project||'').trim().slice(0,120); const email=String(req.body?.contact_email||'').trim().slice(0,200); const payload=ControlService.parsePublishPayload(req.body?.payload); const npmEnabled=req.body?.npm_enabled===true; const npmMode=req.body?.npm_cdn_mode==='custom'?'custom':'inherit'; const notionEnabled=req.body?.notion_enabled===true; const notionSyncEnabled=req.body?.notion_sync_enabled===true; const notionPageId=notionEnabled?normalizePageId(req.body?.notion_page_id):''; const notionPublicUrl=notionEnabled?normalizePublicUrl(req.body?.notion_public_url):''; let npmPackage=''; let npmLines=[]; let npmPrimary='';
+  const repo=String(req.body?.github_repo||'').trim().slice(0,200); const cf=String(req.body?.cloudflare_project||'').trim().slice(0,120); const email=String(req.body?.contact_email||'').trim().slice(0,200); const payload=ControlService.parsePublishPayload(req.body?.payload); const publishLinkWeights=ControlService.parsePublishLinkWeights(req.body?.publish_link_weights); const npmEnabled=req.body?.npm_enabled===true; const npmMode=req.body?.npm_cdn_mode==='custom'?'custom':'inherit'; const notionEnabled=req.body?.notion_enabled===true; const notionSyncEnabled=req.body?.notion_sync_enabled===true; const notionPageId=notionEnabled?normalizePageId(req.body?.notion_page_id):''; const notionPublicUrl=notionEnabled?normalizePublicUrl(req.body?.notion_public_url):''; let npmPackage=''; let npmLines=[]; let npmPrimary='';
   if(repo&&!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo))throw badRequest('GitHub 仓库请使用 owner/repository 格式');
   if(cf&&!/^[a-z0-9][a-z0-9-]{0,62}$/.test(cf))throw badRequest('Cloudflare 项目名仅支持小写字母、数字和连字符');
   if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw badRequest('防失联邮箱格式不正确');
@@ -408,11 +424,11 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
   if(notionSyncEnabled&&modes.notion==='disabled')throw badRequest('启用自动同步前，请先启用 Notion 平台');
   if(notionSyncEnabled&&!notionPageId)throw badRequest('启用 Notion 自动同步时，请填写 Notion 页面 ID');
   const row = await transaction(async client => {
-    const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,cloudflare_project=$5,contact_email=$6,payload=$7::jsonb,npm_enabled=$8,npm_package_name=$9,npm_cdn_mode=$10,npm_cdn_lines=$11::jsonb,npm_primary_cdn=$12,notion_enabled=$13,notion_sync_enabled=$14,notion_page_id=$15,notion_public_url=$16,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github,repo,cf,email,JSON.stringify(payload),modes.npm!=='disabled',npmPackage,npmMode,JSON.stringify(npmLines),npmPrimary,modes.notion!=='disabled',notionSyncEnabled,notionPageId,notionPublicUrl])).rows[0];
+    const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,cloudflare_project=$5,contact_email=$6,payload=$7::jsonb,npm_enabled=$8,npm_package_name=$9,npm_cdn_mode=$10,npm_cdn_lines=$11::jsonb,npm_primary_cdn=$12,notion_enabled=$13,notion_sync_enabled=$14,notion_page_id=$15,notion_public_url=$16,publish_link_weights=$17::jsonb,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github,repo,cf,email,JSON.stringify(payload),modes.npm!=='disabled',npmPackage,npmMode,JSON.stringify(npmLines),npmPrimary,modes.notion!=='disabled',notionSyncEnabled,notionPageId,notionPublicUrl,JSON.stringify(publishLinkWeights)])).rows[0];
     if(!updated)throw notFound('站点不存在');
     await SitePublishPlatformService.save(siteId,requestedPlatforms,client);
     await ControlService.bumpRevisions('publish',[siteId],client);
-    await ControlService.audit(actor(req),'publish.update','site',siteId,{github_repo:repo,cloudflare_project:cf,npm_enabled:modes.npm!=='disabled',npm_package_name:npmPackage,npm_cdn_mode:npmMode,npm_cdn_lines:npmLines,npm_primary_cdn:npmPrimary,notion_enabled:modes.notion!=='disabled',notion_sync_enabled:notionSyncEnabled,notion_page_id:notionPageId,notion_public_url:notionPublicUrl,platform_modes:modes},req.ip,client);
+    await ControlService.audit(actor(req),'publish.update','site',siteId,{github_repo:repo,cloudflare_project:cf,npm_enabled:modes.npm!=='disabled',npm_package_name:npmPackage,npm_cdn_mode:npmMode,npm_cdn_lines:npmLines,npm_primary_cdn:npmPrimary,notion_enabled:modes.notion!=='disabled',notion_sync_enabled:notionSyncEnabled,notion_page_id:notionPageId,notion_public_url:notionPublicUrl,publish_link_weights:publishLinkWeights,platform_modes:modes},req.ip,client);
     return updated;
   });
   return ok(res,row,'发布页配置已更新');

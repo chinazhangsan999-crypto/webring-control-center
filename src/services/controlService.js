@@ -5,6 +5,10 @@ const { randomToken, sha256, timingSafeEqualText, normalizeHttpUrl, cleanSlug } 
 const { SSO_TICKET_TTL_SECONDS } = require('../config');
 const { parseSiteAuthorization } = require('../../packages/shared-protocol');
 const { badRequest, notFound } = require('../lib/errors');
+const AdEdgeService = require('./adEdgeService');
+const PlatformSettingsService = require('./platformSettingsService');
+const SitePublishPlatformService = require('./sitePublishPlatformService');
+const { npmCdnUrls } = require('./npmPublishService');
 
 const AD_TYPES = new Set(['normal', 'code']);
 const AD_POSITIONS = new Set(['banner', 'icon', 'top_float', 'bottom_float', 'icon_float']);
@@ -208,6 +212,15 @@ function parseAd(payload) {
   if (adType === 'code' && !adCode.trim()) throw new Error('请填写联盟广告代码');
   const priority = Number(payload.priority || 0);
   if (!Number.isSafeInteger(priority) || Math.abs(priority) > 1_000_000) throw badRequest('广告优先级必须是 -1000000 到 1000000 之间的整数');
+  const renderMode = adType === 'code' && payload.render_mode === 'sandbox' ? 'sandbox' : 'direct';
+  const rawSandbox = payload.sandbox_options && typeof payload.sandbox_options === 'object' && !Array.isArray(payload.sandbox_options) ? payload.sandbox_options : {};
+  const sandboxOptions = renderMode === 'sandbox' ? {
+    initial_height: Math.min(800, Math.max(50, Number.parseInt(rawSandbox.initial_height, 10) || 120)),
+    auto_height: rawSandbox.auto_height !== false,
+    allow_popups: rawSandbox.allow_popups !== false,
+    allow_forms: rawSandbox.allow_forms === true,
+    timeout_ms: Math.min(30000, Math.max(1000, Number.parseInt(rawSandbox.timeout_ms, 10) || 10000))
+  } : {};
   return {
     namespace: requiredText(payload.namespace, '广告命名空间', 120),
     title: requiredText(payload.title, '广告标题', 120),
@@ -215,6 +228,8 @@ function parseAd(payload) {
     position,
     platform,
     adCode,
+    renderMode,
+    sandboxOptions,
     imageUrl: adType === 'normal' && payload.image_url ? normalizeHttpUrl(payload.image_url, '图片地址') : '',
     targetUrl: adType === 'normal' && payload.target_url ? normalizeHttpUrl(payload.target_url, '跳转地址') : '',
     description: String(payload.description || '').slice(0, 500),
@@ -255,6 +270,23 @@ function parsePublishPayload(value) {
   };
 }
 
+const PUBLISH_LINK_WEIGHT_DEFAULTS = Object.freeze({
+  cloudflare: 500,
+  github: 400,
+  notion: 300,
+  'npm:unpkg': 200,
+  'npm:esm': 100
+});
+
+function parsePublishLinkWeights(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(Object.entries(PUBLISH_LINK_WEIGHT_DEFAULTS).map(([key, fallback]) => {
+    const number = Number(input[key] ?? fallback);
+    if (!Number.isSafeInteger(number) || Math.abs(number) > 1_000_000) throw badRequest('永久发布页排序权重必须是 -1000000 到 1000000 之间的整数');
+    return [key, number];
+  }));
+}
+
 async function saveAd(id, payload, actor, ip) {
   const item = parseAd(payload);
   const { scope } = item;
@@ -268,10 +300,10 @@ async function saveAd(id, payload, actor, ip) {
       const count = Number((await client.query('SELECT COUNT(*)::int AS count FROM site_groups WHERE id=ANY($1::bigint[])', [scope.groupIds])).rows[0].count);
       if (count !== scope.groupIds.length) throw badRequest('广告投放范围包含不存在的站点分组');
     }
-    const params = [item.namespace,item.title,item.adType,item.position,item.platform,item.adCode,item.imageUrl,item.targetUrl,item.description,item.priority,item.enabled,scope.scopeMode,integrity];
+    const params = [item.namespace,item.title,item.adType,item.position,item.platform,item.adCode,item.imageUrl,item.targetUrl,item.description,item.priority,item.enabled,scope.scopeMode,integrity,item.renderMode,JSON.stringify(item.sandboxOptions)];
     const result = id
-      ? await client.query(`UPDATE ads SET namespace=$2,title=$3,ad_type=$4,ad_position=$5,platform=$6,ad_code=$7,image_url=$8,target_url=$9,description=$10,priority=$11,enabled=$12,scope_mode=$13,integrity_sha256=$14,updated_at=NOW() WHERE id=$1 RETURNING *`, [id,...params])
-      : await client.query(`INSERT INTO ads(namespace,title,ad_type,ad_position,platform,ad_code,image_url,target_url,description,priority,enabled,scope_mode,integrity_sha256) VALUES(${params.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`, params);
+      ? await client.query(`UPDATE ads SET namespace=$2,title=$3,ad_type=$4,ad_position=$5,platform=$6,ad_code=$7,image_url=$8,target_url=$9,description=$10,priority=$11,enabled=$12,scope_mode=$13,integrity_sha256=$14,render_mode=$15,sandbox_options=$16::jsonb,updated_at=NOW() WHERE id=$1 RETURNING *`, [id,...params])
+      : await client.query(`INSERT INTO ads(namespace,title,ad_type,ad_position,platform,ad_code,image_url,target_url,description,priority,enabled,scope_mode,integrity_sha256,render_mode,sandbox_options) VALUES(${params.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`, params);
     const row = result.rows[0];
     if (!row) throw new Error('广告不存在');
     await setTargets(client, 'ad', 'ad_id', row.id, scope.siteIds, scope.groupIds);
@@ -286,9 +318,28 @@ async function saveAd(id, payload, actor, ip) {
       site_ids: scope.siteIds,
       group_ids: scope.groupIds,
       integrity_sha256: integrity
+      ,render_mode: item.renderMode
     }, ip, client);
     return row;
   });
+}
+
+function publishPageLinks(publish, platformAccounts, platformSettings) {
+  const pages = [];
+  const weights = parsePublishLinkWeights(publish?.publish_link_weights);
+  if (platformAccounts.cloudflare?.mode !== 'disabled' && publish?.permanent_url) pages.push({ id: 'cloudflare', label: 'Cloudflare 永久发布页', url: publish.permanent_url, enabled: true, sort_order: 10, sort_weight: weights.cloudflare });
+  if (platformAccounts.github?.mode !== 'disabled' && publish?.github_pages_url) pages.push({ id: 'github', label: 'GitHub Pages', url: publish.github_pages_url, enabled: true, sort_order: 20, sort_weight: weights.github });
+  if (platformAccounts.notion?.mode !== 'disabled' && publish?.notion_enabled && publish?.notion_public_url) pages.push({ id: 'notion', label: 'Notion 公告发布页', url: publish.notion_public_url, enabled: true, sort_order: 30, sort_weight: weights.notion });
+  if (platformAccounts.npm?.mode !== 'disabled' && publish?.npm_enabled && publish?.npm_package_name) {
+    const inherited = platformAccounts.npm.mode === 'site' ? platformAccounts.npm.settings : platformSettings.npm;
+    const lines = publish.npm_cdn_mode === 'custom' ? publish.npm_cdn_lines : inherited.lines;
+    const primary = publish.npm_cdn_mode === 'custom' ? publish.npm_primary_cdn : inherited.primary;
+    for (const [index, item] of npmCdnUrls(publish.npm_package_name, 'latest', lines, primary).filter(item => item.page_entry).entries()) {
+      const id = `npm:${item.provider}`;
+      pages.push({ id, label: item.label, url: item.url, enabled: true, sort_order: 40 + index, sort_weight: weights[id] });
+    }
+  }
+  return pages;
 }
 
 async function resolveSiteConfig(siteId) {
@@ -300,7 +351,7 @@ async function resolveSiteConfig(siteId) {
     LEFT JOIN site_group_members sgm ON sgm.group_id=ngt.group_id AND sgm.site_id=$1
     WHERE n.scope_mode='global' OR nst.site_id IS NOT NULL OR sgm.site_id IS NOT NULL
     ORDER BY n.sort_order DESC,n.id ASC`, [siteId]);
-  const ads = await query(`SELECT DISTINCT a.id,a.namespace,a.title,a.ad_type,a.ad_position,a.platform,a.ad_code,a.image_url,a.target_url,a.description,a.priority,a.integrity_sha256
+  const ads = await query(`SELECT DISTINCT a.id,a.namespace,a.title,a.ad_type,a.ad_position,a.platform,a.ad_code,a.image_url,a.target_url,a.description,a.priority,a.integrity_sha256,a.render_mode,a.sandbox_options
     FROM ads a
     LEFT JOIN ad_site_targets ast ON ast.ad_id=a.id AND ast.site_id=$1
     LEFT JOIN ad_group_targets agt ON agt.ad_id=a.id
@@ -309,7 +360,16 @@ async function resolveSiteConfig(siteId) {
     ORDER BY a.ad_position,a.priority DESC,a.id`, [siteId]);
   const policies = await query('SELECT slot,policy FROM ad_slot_policies WHERE site_id=$1 ORDER BY slot', [siteId]);
   const publish = await one('SELECT * FROM publish_pages WHERE site_id=$1', [siteId]);
-  return { revisions, nodes: nodes.rows, ads: ads.rows, ad_policies: policies.rows, publish };
+  const [platformAccounts, platformSettings] = await Promise.all([
+    SitePublishPlatformService.safeSettings(siteId),
+    PlatformSettingsService.safeSettings()
+  ]);
+  publish.pages = publishPageLinks(publish, platformAccounts, platformSettings);
+  const adEdge = await AdEdgeService.siteConfig(siteId);
+  const deliveredAds = ads.rows
+    .filter(ad => ad.ad_type !== 'code' || adEdge.enabled)
+    .map(ad => ad.ad_type === 'code' ? { ...ad, ad_code: '', code_delivery: 'edge', ad_edge: { profile_id: adEdge.profile_id, origin: adEdge.origin } } : ad);
+  return { revisions, nodes: nodes.rows, ads: deliveredAds, ad_policies: policies.rows, publish, ad_edge: adEdge };
 }
 
 module.exports = {
@@ -326,11 +386,13 @@ module.exports = {
   saveNode,
   saveAd,
   resolveSiteConfig,
+  publishPageLinks,
   requiredText,
   idList,
   parseAd,
   parseAdPolicies,
   parsePublishPayload,
+  parsePublishLinkWeights,
   parseNode,
   resourceScope
 };

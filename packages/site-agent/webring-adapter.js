@@ -18,6 +18,10 @@ function normalizeCentralAd(ad) {
     adPosition: ad.ad_position,
     platform: ad.platform || 'all',
     adCode: String(ad.ad_code || ''),
+    renderMode: ad.render_mode === 'sandbox' ? 'sandbox' : 'direct',
+    sandboxOptions: ad.sandbox_options && typeof ad.sandbox_options === 'object' ? ad.sandbox_options : {},
+    adEdgeProfileId: String(ad.ad_edge?.profile_id || ''),
+    adEdgeOrigin: String(ad.ad_edge?.origin || ''),
     imageUrl: String(ad.image_url || ''),
     targetUrl: String(ad.target_url || ''),
     sortOrder: Number(ad.priority || 0),
@@ -66,6 +70,10 @@ function createWebringConfigApplier({ run, all, withTransaction, onChanged = asy
     await ensureColumn(all, run, 'ads', 'central_id', 'TEXT DEFAULT NULL');
     await ensureColumn(all, run, 'ads', 'namespace', "TEXT NOT NULL DEFAULT ''");
     await ensureColumn(all, run, 'ads', 'integrity_sha256', "TEXT NOT NULL DEFAULT ''");
+    await ensureColumn(all, run, 'ads', 'render_mode', "TEXT NOT NULL DEFAULT 'direct'");
+    await ensureColumn(all, run, 'ads', 'sandbox_options', "TEXT NOT NULL DEFAULT '{}'");
+    await ensureColumn(all, run, 'ads', 'ad_edge_profile_id', "TEXT NOT NULL DEFAULT ''");
+    await ensureColumn(all, run, 'ads', 'ad_edge_origin', "TEXT NOT NULL DEFAULT ''");
     await run("UPDATE ads SET managed_by='local', namespace='local:' || id WHERE namespace='' OR namespace IS NULL");
     await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_ads_central_id ON ads(central_id) WHERE central_id IS NOT NULL");
   }
@@ -77,8 +85,13 @@ function createWebringConfigApplier({ run, all, withTransaction, onChanged = asy
       ...policyEntries(config?.ad_policies),
       ['control_center_nodes_managed', '1'],
       ['control_center_revision', String(config?.revision || '')],
+      ['control_center_site_id', String(config?.site_id || '')],
       ['publish_permanent_url', String(config?.publish?.permanent_url || '')],
       ['publish_github_pages_url', String(config?.publish?.github_pages_url || '')]
+      ,['ad_edge_profile_id', String(config?.ad_edge?.profile_id || '')]
+      ,['ad_edge_origin', String(config?.ad_edge?.origin || '')]
+      ,['ad_edge_ticket_key', String(config?.ad_edge?.ticket_key || '')]
+      ,['ad_edge_enabled', config?.ad_edge?.enabled === true ? '1' : '0']
     ];
     await withTransaction(async ({ run: txRun, get: txGet }) => {
       await txRun("DELETE FROM mirrors WHERE managed_by='central'");
@@ -92,8 +105,8 @@ function createWebringConfigApplier({ run, all, withTransaction, onChanged = asy
 
       await txRun("DELETE FROM ads WHERE managed_by='central'");
       for (const ad of ads) {
-        await txRun(`INSERT INTO ads(type,title,description,ad_type,ad_position,platform,ad_code,image_url,target_url,sort_order,status,managed_by,central_id,namespace,integrity_sha256)
-          VALUES(?,?,?,?,?,?,?,?,?,?,1,'central',?,?,?)`, [ad.type,ad.title,ad.description,ad.adType,ad.adPosition,ad.platform,ad.adCode,ad.imageUrl,ad.targetUrl,ad.sortOrder,ad.centralId,ad.namespace,ad.integrity]);
+        await txRun(`INSERT INTO ads(type,title,description,ad_type,ad_position,platform,ad_code,image_url,target_url,sort_order,status,managed_by,central_id,namespace,integrity_sha256,render_mode,sandbox_options,ad_edge_profile_id,ad_edge_origin)
+          VALUES(?,?,?,?,?,?,?,?,?,?,1,'central',?,?,?,?,?,?,?)`, [ad.type,ad.title,ad.description,ad.adType,ad.adPosition,ad.platform,ad.adCode,ad.imageUrl,ad.targetUrl,ad.sortOrder,ad.centralId,ad.namespace,ad.integrity,ad.renderMode,JSON.stringify(ad.sandboxOptions),ad.adEdgeProfileId,ad.adEdgeOrigin]);
       }
 
       for (const [key, value] of settings) {
