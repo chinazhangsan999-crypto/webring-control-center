@@ -299,6 +299,23 @@ router.get('/ads', asyncRoute(async (_req, res) => {
     FROM ads a ORDER BY a.ad_position,a.priority DESC,a.id`);
   return ok(res, result.rows);
 }));
+async function listSiteLocalAds(adType = null) {
+  const values = adType ? [adType] : [];
+  const result = await query(`SELECT p.site_id,s.name AS site_name,s.slug,p.local_ad_id,p.title,p.ad_type,
+    p.description,p.platform,p.image_url,p.target_url,p.render_mode,p.ad_position,p.priority,p.enabled,
+    p.integrity_sha256,p.sandbox_options,p.updated_at
+    FROM site_ad_payloads p JOIN sites s ON s.id=p.site_id
+    ${adType ? 'WHERE p.ad_type=$1' : ''}
+    ORDER BY s.name,p.ad_type,p.priority DESC,p.local_ad_id`, values);
+  return result.rows;
+}
+router.get('/site-local-ads', asyncRoute(async (_req, res) => {
+  return ok(res, await listSiteLocalAds());
+}));
+router.get('/site-code-ads', asyncRoute(async (_req, res) => {
+  const rows = await listSiteLocalAds('code');
+  return ok(res, rows);
+}));
 router.get('/ad-policies', asyncRoute(async (_req, res) => {
   const sites = await query(`SELECT s.id,s.name,s.slug,s.enabled,s.status,s.applied_revision,r.ads_revision
     FROM sites s JOIN site_revisions r ON r.site_id=s.id ORDER BY s.name,s.id`);

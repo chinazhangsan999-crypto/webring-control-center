@@ -188,7 +188,7 @@ async function verifyRenderRequest(req, siteId, adId) {
   if (!timingSafeText(expected, signature)) throw badRequest('广告 Edge 签名无效');
   const ad = source === 'local'
     ? await one(`SELECT local_ad_id AS id,ad_code,integrity_sha256,render_mode FROM site_ad_payloads
-      WHERE site_id=$1 AND local_ad_id=$2 AND enabled=TRUE AND render_mode=$3`, [siteId,adId,mode])
+      WHERE site_id=$1 AND local_ad_id=$2 AND enabled=TRUE AND ad_type='code' AND render_mode=$3`, [siteId,adId,mode])
     : await one(`SELECT DISTINCT a.id,a.ad_code,a.integrity_sha256,a.render_mode FROM ads a
     LEFT JOIN ad_site_targets ast ON ast.ad_id=a.id AND ast.site_id=$1
     LEFT JOIN ad_group_targets agt ON agt.ad_id=a.id
