@@ -394,9 +394,10 @@ async function deployDualPlatform(input, previous = {}, dependencies = {}) {
   const startedAt = new Date().toISOString();
   const enabled = input.enabledPlatforms || { github: true, cloudflare: true, npm: Boolean(input.npmPackageName), notion: Boolean(input.notionSyncEnabled) };
   const source = input.accountSources || {};
+  const skipReasons = input.platformSkipReasons || {};
   const initial = platform => enabled[platform]
     ? (previous[platform]?.status === 'succeeded' ? previous[platform] : { status: platform === 'github' || platform === 'cloudflare' ? 'running' : 'pending', account_source: source[platform] || 'global', started_at: startedAt })
-    : { status: 'skipped', account_source: 'disabled', reason: '该站点未启用此平台' };
+    : { status: 'skipped', account_source: skipReasons[platform] ? (source[platform] || 'global') : 'disabled', reason: skipReasons[platform]?.reason || '该站点未启用此平台', ...(skipReasons[platform]?.code ? { reason_code: skipReasons[platform].code } : {}) };
   const progress = {
     github: initial('github'),
     cloudflare: initial('cloudflare'),

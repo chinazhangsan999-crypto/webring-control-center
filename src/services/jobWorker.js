@@ -179,12 +179,19 @@ async function runPublishWorkflow(job, dependencies = {}) {
     await query('UPDATE jobs SET payload=$2::jsonb WHERE id=$1', [job.id, JSON.stringify(job.payload)]);
   }
   const progress = { ...previous, build };
+  const npmState = await one('SELECT npm_bootstrap_status FROM publish_pages WHERE site_id=$1', [job.site_id]);
+  const npmBootstrapStatus = npmState?.npm_bootstrap_status || 'not_started';
+  const npmOidcReady = npmBootstrapStatus !== 'not_started';
   const enabledPlatforms = {
     github: resolvedPlatforms.platforms.github.enabled,
     cloudflare: resolvedPlatforms.platforms.cloudflare.enabled,
-    npm: resolvedPlatforms.platforms.npm.enabled && Boolean(build.npm_package_name),
+    npm: resolvedPlatforms.platforms.npm.enabled && Boolean(build.npm_package_name) && npmOidcReady,
     notion: resolvedPlatforms.platforms.notion.enabled && Boolean(build.notion_sync_enabled)
   };
+  const platformSkipReasons = {};
+  if (resolvedPlatforms.platforms.npm.enabled && build.npm_package_name && !npmOidcReady) {
+    platformSkipReasons.npm = { code: 'NPM_BOOTSTRAP_REQUIRED', reason: '需要先使用短效 Granular Token 完成 npm 首次发布' };
+  }
   const progressTotal = 1 + Object.values(enabledPlatforms).filter(Boolean).length;
   await saveJobProgress(job.id, progress, 1, progressTotal);
   try {
@@ -210,6 +217,7 @@ async function runPublishWorkflow(job, dependencies = {}) {
       npmPageUrls: build.npm_page_urls,
       generatedAt: build.manifest.generated_at,
       enabledPlatforms,
+      platformSkipReasons,
       accountSources: Object.fromEntries(Object.entries(resolvedPlatforms.platforms).map(([name,value])=>[name,value.source])),
       credentials: {
         githubToken: resolvedPlatforms.platforms.github.credentials.token || '',

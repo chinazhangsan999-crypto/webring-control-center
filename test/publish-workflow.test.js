@@ -201,6 +201,27 @@ test('禁用的平台不会执行，也不会让整轮发布失败', async () =>
   assert.equal(result.cloudflare.account_source, 'disabled');
 });
 
+test('npm 首次发布未完成时给出操作提示且不让整轮发布失败', async () => {
+  let npmCalls = 0;
+  const result = await deployDualPlatform({
+    githubPagesUrl: 'https://owner.github.io/publish/',
+    sha256: 'a'.repeat(64),
+    npmPackageName: 'new-publish-package',
+    enabledPlatforms: { github: true, cloudflare: false, npm: false, notion: false },
+    accountSources: { github: 'global', cloudflare: 'disabled', npm: 'global', notion: 'disabled' },
+    platformSkipReasons: { npm: { code: 'NPM_BOOTSTRAP_REQUIRED', reason: '需要先完成 npm 首次发布' } }
+  }, {}, {
+    deployGithub: async () => ({ commit_sha: 'commit' }),
+    deployNpm: async () => { npmCalls += 1; },
+    verify: async () => ({ verified: true })
+  });
+  assert.equal(result.github.status, 'succeeded');
+  assert.equal(result.npm.status, 'skipped');
+  assert.equal(result.npm.reason_code, 'NPM_BOOTSTRAP_REQUIRED');
+  assert.equal(result.npm.account_source, 'global');
+  assert.equal(npmCalls, 0);
+});
+
 test('Notion 同步是独立发布通道，失败不会改写其他平台结果', async () => {
   await assert.rejects(() => deployDualPlatform({ githubPagesUrl: 'https://owner.github.io/publish/', permanentUrl: 'https://go.example.com/', sha256: 'e'.repeat(64), notionSyncEnabled: true, notionPageId: '0123456789abcdef0123456789abcdef', notionPublicUrl: 'https://workspace.notion.site/publish', credentials: { notionToken: 'secret' } }, {}, {
     deployGithub: async () => ({ commit_sha: 'commit' }),
