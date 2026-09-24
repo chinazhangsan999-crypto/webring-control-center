@@ -16,6 +16,7 @@ const NpmBootstrapService = require('../services/npmBootstrapService');
 const AdEdgeService = require('../services/adEdgeService');
 const { normalizePackageName, normalizeCdnLines, npmCdnUrls, npmPageUrl, resolveNpmPageEntryProvider } = require('../services/npmPublishService');
 const { normalizePageId, normalizePublicUrl, verifyNotionToken } = require('../services/notionPublishService');
+const { githubPublishTarget, repositoryNameFromFull } = require('../services/githubPublishTargetService');
 const { badRequest, notFound, conflict } = require('../lib/errors');
 
 const router = express.Router();
@@ -28,6 +29,11 @@ function numericId(value, label = '编号') {
 }
 
 function actor(req) { return { type: 'admin', id: req.admin.id }; }
+
+function githubTarget(owner, repositoryName) {
+  try { return githubPublishTarget(owner, repositoryName); }
+  catch (error) { throw badRequest(error.message); }
+}
 
 async function testGithub(config) {
   if (!config.githubToken) throw badRequest('请先填写 GitHub Token');
@@ -152,15 +158,17 @@ router.post('/platform-settings/test/:provider', asyncRoute(async (req, res) => 
 router.post('/sites/:id/publish/platforms/:provider/test', asyncRoute(async (req, res) => {
   const siteId=numericId(req.params.id);const provider=String(req.params.provider||'');
   if(!SitePublishPlatformService.PLATFORMS.includes(provider))throw badRequest('未知发布平台');
-  const config=await one('SELECT github_repo,cloudflare_project,npm_package_name,notion_page_id FROM publish_pages WHERE site_id=$1',[siteId]);
+  const config=await one('SELECT github_repo_name,github_repo,cloudflare_project,npm_package_name,notion_page_id FROM publish_pages WHERE site_id=$1',[siteId]);
   if(!config)throw notFound('站点不存在');
   const resolved=await SitePublishPlatformService.resolveForDeployment(siteId,provider);
   const platform=resolved.platforms[provider];
   if(!platform.enabled)throw badRequest('该站点未启用此平台');
   let result;
   if(provider==='github'){
-    const token=platform.credentials.token;const repo=String(config.github_repo||'');
-    if(!repo)throw badRequest('请先填写 GitHub 仓库');
+    const token=platform.credentials.token;
+    const repositoryName=config.github_repo_name||repositoryNameFromFull(config.github_repo);
+    if(!repositoryName)throw badRequest('请先填写 GitHub 仓库名');
+    const repo=githubTarget(platform.settings.username,repositoryName).fullRepository;
     const response=await fetch(`https://api.github.com/repos/${repo}`,{headers:{Accept:'application/vnd.github+json',Authorization:`Bearer ${token}`,'User-Agent':'webring-control-center'},signal:AbortSignal.timeout(15000)});
     const data=await response.json().catch(()=>null);if(!response.ok)throw badRequest(`GitHub 仓库连接失败：${data?.message||`HTTP ${response.status}`}`);
     result={message:`GitHub 仓库连接正常（${platform.source==='global'?'全局账号':'本站独立账号'}）`};
@@ -377,9 +385,17 @@ router.get('/sites/:id/publish', asyncRoute(async(req,res)=>{
     FROM publish_pages p LEFT JOIN LATERAL (SELECT id,status,payload,result,last_error,created_at,started_at,finished_at FROM jobs WHERE type='publish.deploy' AND site_id=p.site_id ORDER BY id DESC LIMIT 1) j ON TRUE
     WHERE p.site_id=$1`,[siteId]);
   if(!row)throw notFound('站点不存在');
-  row.platform_accounts=await SitePublishPlatformService.safeSettings(siteId);
+  const [platformAccounts,settings]=await Promise.all([SitePublishPlatformService.safeSettings(siteId),PlatformSettingsService.safeSettings()]);
+  row.platform_accounts=platformAccounts;
+  row.github_repo_name=row.github_repo_name||repositoryNameFromFull(row.github_repo);
+  row.github_owners={global:settings.github.username||'',site:platformAccounts.github?.settings?.username||''};
+  if(platformAccounts.github?.mode!=='disabled'&&row.github_repo_name){
+    const owner=platformAccounts.github.mode==='site'?row.github_owners.site:row.github_owners.global;
+    const target=githubTarget(owner,row.github_repo_name);
+    row.github_repo=target.fullRepository;
+    row.github_pages_url=target.pagesUrl;
+  }
   if(row?.npm_enabled&&row.npm_package_name){
-    const settings=await PlatformSettingsService.safeSettings();
     const npmAccount=row.platform_accounts.npm;
     const inherited=npmAccount.mode==='site'?npmAccount.settings:settings.npm;
     const lines=row.npm_cdn_mode==='custom'?row.npm_cdn_lines:inherited.lines;
@@ -417,22 +433,25 @@ router.get('/sites/:id/publish/history', asyncRoute(async(req,res)=>{
   return ok(res,{site,jobs:result.rows});
 }));
 router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
-  const siteId=numericId(req.params.id); const permanent=req.body?.permanent_url?normalizeHttpUrl(req.body.permanent_url,'永久发布域名'):''; const github=req.body?.github_pages_url?normalizeHttpUrl(req.body.github_pages_url,'GitHub Pages 地址'):'';
+  const siteId=numericId(req.params.id); const permanent=req.body?.permanent_url?normalizeHttpUrl(req.body.permanent_url,'永久发布域名'):'';
   const currentPlatforms=await SitePublishPlatformService.safeSettings(siteId);
+  const globalSettings=await PlatformSettingsService.safeSettings();
   const requestedPlatforms=req.body?.platforms&&typeof req.body.platforms==='object'?req.body.platforms:{};
   for(const [name,value] of Object.entries(requestedPlatforms)){if(!SitePublishPlatformService.PLATFORMS.includes(name)||!SitePublishPlatformService.MODES.has(value?.mode))throw badRequest('发布平台账号来源不合法');}
   const modes=Object.fromEntries(SitePublishPlatformService.PLATFORMS.map(name=>[name,SitePublishPlatformService.normalizeMode(requestedPlatforms[name]?.mode??currentPlatforms[name]?.mode)]));
   if(modes.cloudflare!=='disabled'&&!permanent)throw badRequest('启用 Cloudflare 时必须填写自定义永久发布域名');
-  if(modes.github!=='disabled'&&!github)throw badRequest('启用 GitHub 时必须填写 GitHub Pages 地址');
   if(permanent&&new URL(permanent).hostname.toLowerCase().endsWith('.pages.dev'))throw badRequest('自定义永久发布域名不能使用 pages.dev 原生地址');
-  if(github&&!new URL(github).hostname.toLowerCase().endsWith('.github.io'))throw badRequest('GitHub Pages 地址必须使用 github.io 原生地址');
-  const repo=String(req.body?.github_repo||'').trim().slice(0,200); const cf=String(req.body?.cloudflare_project||'').trim().slice(0,120); const email=String(req.body?.contact_email||'').trim().slice(0,200); const payload=ControlService.parsePublishPayload(req.body?.payload); const publishLinkWeights=ControlService.parsePublishLinkWeights(req.body?.publish_link_weights); const npmEnabled=req.body?.npm_enabled===true; const npmMode=req.body?.npm_cdn_mode==='custom'?'custom':'inherit'; const notionEnabled=req.body?.notion_enabled===true; const notionSyncEnabled=req.body?.notion_sync_enabled===true; const notionPageId=notionEnabled?normalizePageId(req.body?.notion_page_id):''; const notionPublicUrl=notionEnabled?normalizePublicUrl(req.body?.notion_public_url):''; let npmPackage=''; let npmLines=[]; let npmPrimary='';
-  if(repo&&!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo))throw badRequest('GitHub 仓库请使用 owner/repository 格式');
+  const repositoryName=String(req.body?.github_repo_name||repositoryNameFromFull(req.body?.github_repo)||'').trim().slice(0,100); const cf=String(req.body?.cloudflare_project||'').trim().slice(0,120); const email=String(req.body?.contact_email||'').trim().slice(0,200); const payload=ControlService.parsePublishPayload(req.body?.payload); const publishLinkWeights=ControlService.parsePublishLinkWeights(req.body?.publish_link_weights); const npmEnabled=req.body?.npm_enabled===true; const npmMode=req.body?.npm_cdn_mode==='custom'?'custom':'inherit'; const notionEnabled=req.body?.notion_enabled===true; const notionSyncEnabled=req.body?.notion_sync_enabled===true; const notionPageId=notionEnabled?normalizePageId(req.body?.notion_page_id):''; const notionPublicUrl=notionEnabled?normalizePublicUrl(req.body?.notion_public_url):''; let npmPackage=''; let npmLines=[]; let npmPrimary='';
   if(cf&&!/^[a-z0-9][a-z0-9-]{0,62}$/.test(cf))throw badRequest('Cloudflare 项目名仅支持小写字母、数字和连字符');
   if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw badRequest('防失联邮箱格式不正确');
   try{npmPackage=req.body?.npm_package_name?normalizePackageName(req.body.npm_package_name):'';}catch(error){throw badRequest(error.message);}
   try { npmLines=npmMode==='custom'?normalizeCdnLines(req.body?.npm_cdn_lines):[]; npmPrimary=npmMode==='custom'?String(req.body?.npm_primary_cdn||'').trim():''; if(npmMode==='custom'&&!npmLines.includes(npmPrimary))npmPrimary=''; } catch(error) { throw badRequest(error.message); }
-  if(modes.github!=='disabled'&&!repo)throw badRequest('启用 GitHub 时必须填写 GitHub 仓库');
+  let github={fullRepository:'',pagesUrl:''};
+  if(modes.github!=='disabled'){
+    if(!repositoryName)throw badRequest('启用 GitHub 时必须填写 GitHub 仓库名');
+    const owner=modes.github==='site'?currentPlatforms.github?.settings?.username:globalSettings.github?.username;
+    github=githubTarget(owner,repositoryName);
+  }
   if(modes.cloudflare!=='disabled'&&!cf)throw badRequest('启用 Cloudflare 时必须填写 Cloudflare 项目');
   if(modes.npm!=='disabled'&&!npmPackage)throw badRequest('启用 npm 发布时必须填写 npm 包名');
   if(modes.npm!=='disabled'&&modes.github==='disabled')throw badRequest('npm OIDC 发布依赖 GitHub，请同时启用 GitHub 平台');
@@ -441,11 +460,11 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
   if(notionSyncEnabled&&modes.notion==='disabled')throw badRequest('启用自动同步前，请先启用 Notion 平台');
   if(notionSyncEnabled&&!notionPageId)throw badRequest('启用 Notion 自动同步时，请填写 Notion 页面 ID');
   const row = await transaction(async client => {
-    const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,cloudflare_project=$5,contact_email=$6,payload=$7::jsonb,npm_enabled=$8,npm_package_name=$9,npm_cdn_mode=$10,npm_cdn_lines=$11::jsonb,npm_primary_cdn=$12,notion_enabled=$13,notion_sync_enabled=$14,notion_page_id=$15,notion_public_url=$16,publish_link_weights=$17::jsonb,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github,repo,cf,email,JSON.stringify(payload),modes.npm!=='disabled',npmPackage,npmMode,JSON.stringify(npmLines),npmPrimary,modes.notion!=='disabled',notionSyncEnabled,notionPageId,notionPublicUrl,JSON.stringify(publishLinkWeights)])).rows[0];
+    const updated=(await client.query(`UPDATE publish_pages SET permanent_url=$2,github_pages_url=$3,github_repo=$4,github_repo_name=$5,cloudflare_project=$6,contact_email=$7,payload=$8::jsonb,npm_enabled=$9,npm_package_name=$10,npm_cdn_mode=$11,npm_cdn_lines=$12::jsonb,npm_primary_cdn=$13,notion_enabled=$14,notion_sync_enabled=$15,notion_page_id=$16,notion_public_url=$17,publish_link_weights=$18::jsonb,updated_at=NOW() WHERE site_id=$1 RETURNING *`,[siteId,permanent,github.pagesUrl,github.fullRepository,repositoryName,cf,email,JSON.stringify(payload),modes.npm!=='disabled',npmPackage,npmMode,JSON.stringify(npmLines),npmPrimary,modes.notion!=='disabled',notionSyncEnabled,notionPageId,notionPublicUrl,JSON.stringify(publishLinkWeights)])).rows[0];
     if(!updated)throw notFound('站点不存在');
     await SitePublishPlatformService.save(siteId,requestedPlatforms,client);
     await ControlService.bumpRevisions('publish',[siteId],client);
-    await ControlService.audit(actor(req),'publish.update','site',siteId,{github_repo:repo,cloudflare_project:cf,npm_enabled:modes.npm!=='disabled',npm_package_name:npmPackage,npm_cdn_mode:npmMode,npm_cdn_lines:npmLines,npm_primary_cdn:npmPrimary,notion_enabled:modes.notion!=='disabled',notion_sync_enabled:notionSyncEnabled,notion_page_id:notionPageId,notion_public_url:notionPublicUrl,publish_link_weights:publishLinkWeights,platform_modes:modes},req.ip,client);
+    await ControlService.audit(actor(req),'publish.update','site',siteId,{github_repo_name:repositoryName,github_repo:github.fullRepository,cloudflare_project:cf,npm_enabled:modes.npm!=='disabled',npm_package_name:npmPackage,npm_cdn_mode:npmMode,npm_cdn_lines:npmLines,npm_primary_cdn:npmPrimary,notion_enabled:modes.notion!=='disabled',notion_sync_enabled:notionSyncEnabled,notion_page_id:notionPageId,notion_public_url:notionPublicUrl,publish_link_weights:publishLinkWeights,platform_modes:modes},req.ip,client);
     return updated;
   });
   return ok(res,row,'发布页配置已更新');
@@ -455,11 +474,16 @@ router.post('/sites/:id/publish/jobs', asyncRoute(async(req,res)=>{
   const resolved=await SitePublishPlatformService.resolveForDeployment(siteId);
   const enabled=resolved.platforms;
   const result=await transaction(async client=>{
-    const config=(await client.query(`SELECT p.permanent_url,p.github_pages_url,p.github_repo,p.cloudflare_project,p.npm_enabled,p.npm_package_name,p.notion_sync_enabled,p.notion_page_id,p.notion_public_url,r.publish_revision,r.nodes_revision
+    const config=(await client.query(`SELECT p.permanent_url,p.github_pages_url,p.github_repo,p.github_repo_name,p.cloudflare_project,p.npm_enabled,p.npm_package_name,p.notion_sync_enabled,p.notion_page_id,p.notion_public_url,r.publish_revision,r.nodes_revision
       FROM publish_pages p JOIN site_revisions r ON r.site_id=p.site_id WHERE p.site_id=$1`,[siteId])).rows[0];
     if(!config)throw notFound('站点不存在');
     if(enabled.cloudflare.enabled&&(!config.permanent_url||!config.cloudflare_project))throw badRequest('请先配置 Cloudflare 自定义域名和项目');
-    if(enabled.github.enabled&&(!config.github_pages_url||!config.github_repo))throw badRequest('请先配置 GitHub Pages 地址和仓库');
+    if(enabled.github.enabled){
+      const repositoryName=config.github_repo_name||repositoryNameFromFull(config.github_repo);
+      if(!repositoryName)throw badRequest('请先配置 GitHub 仓库名');
+      const target=githubTarget(enabled.github.settings.username,repositoryName);
+      config.github_repo=target.fullRepository;config.github_pages_url=target.pagesUrl;
+    }
     if(enabled.npm.enabled&&(!enabled.github.enabled||!config.npm_package_name))throw badRequest('npm OIDC 发布需要启用 GitHub 并配置 npm 包名');
     if(config.notion_sync_enabled&&(!enabled.notion.enabled||!config.notion_page_id||!config.notion_public_url))throw badRequest('请先启用 Notion 并配置页面 ID 和公开地址');
     if(!enabled.cloudflare.enabled&&!enabled.github.enabled&&!enabled.npm.enabled&&!config.notion_sync_enabled)throw badRequest('请至少启用一个发布平台');

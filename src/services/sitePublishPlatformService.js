@@ -155,7 +155,10 @@ async function resolveForDeployment(siteId, onlyPlatform = '') {
     if (mode === 'global') {
       binding.config_key = crypto.createHash('sha256').update(JSON.stringify(normalizePlatformSettings(platform, global[platform] || {}))).digest('hex').slice(0, 16);
       assertConfigured(global[platform]?.enabled, `请先启用 ${platform} 全局平台设置`);
-      if (platform === 'github') assertConfigured(global.secrets.github_token, '请先填写 GitHub 全局 Token');
+      if (platform === 'github') {
+        assertConfigured(global.secrets.github_token, '请先填写 GitHub 全局 Token');
+        assertConfigured(global.github.username, '请先填写 GitHub 全局用户名或组织名');
+      }
       if (platform === 'cloudflare') {
         assertConfigured(global.secrets.cloudflare_token, '请先填写 Cloudflare 全局 Token');
         assertConfigured(global.cloudflare.account_id, '请先填写 Cloudflare 全局 Account ID');
@@ -179,6 +182,7 @@ async function resolveForDeployment(siteId, onlyPlatform = '') {
       secret = PlatformSettingsService.decrypt(secretRow?.encrypted_value);
       assertConfigured(secret, `请填写 ${platform} 本站独立账号凭据`);
     }
+    if (platform === 'github') assertConfigured(localSettings.username, '请填写 GitHub 本站独立用户名或组织名');
     if (platform === 'cloudflare') assertConfigured(localSettings.account_id, '请填写 Cloudflare 本站独立 Account ID');
     result.platforms[platform] = { enabled: true, source: 'site', settings: localSettings, credentials: secret ? { token: secret } : {} };
   }

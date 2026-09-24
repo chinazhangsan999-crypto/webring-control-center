@@ -6,6 +6,7 @@ const { SSO_TICKET_TTL_SECONDS } = require('../config');
 const { parseSiteAuthorization } = require('../../packages/shared-protocol');
 const { badRequest, notFound } = require('../lib/errors');
 const AdEdgeService = require('./adEdgeService');
+const { githubPublishTarget, repositoryNameFromFull } = require('./githubPublishTargetService');
 const PlatformSettingsService = require('./platformSettingsService');
 const SitePublishPlatformService = require('./sitePublishPlatformService');
 const { npmCdnUrls } = require('./npmPublishService');
@@ -328,7 +329,14 @@ function publishPageLinks(publish, platformAccounts, platformSettings) {
   const pages = [];
   const weights = parsePublishLinkWeights(publish?.publish_link_weights);
   if (platformAccounts.cloudflare?.mode !== 'disabled' && publish?.permanent_url) pages.push({ id: 'cloudflare', label: 'Cloudflare 永久发布页', url: publish.permanent_url, enabled: true, sort_order: 10, sort_weight: weights.cloudflare });
-  if (platformAccounts.github?.mode !== 'disabled' && publish?.github_pages_url) pages.push({ id: 'github', label: 'GitHub Pages', url: publish.github_pages_url, enabled: true, sort_order: 20, sort_weight: weights.github });
+  if (platformAccounts.github?.mode !== 'disabled') {
+    const repositoryName = publish?.github_repo_name || repositoryNameFromFull(publish?.github_repo);
+    const owner = platformAccounts.github.mode === 'site' ? platformAccounts.github.settings?.username : platformSettings.github?.username;
+    if (repositoryName && owner) {
+      const target = githubPublishTarget(owner, repositoryName);
+      pages.push({ id: 'github', label: 'GitHub Pages', url: target.pagesUrl, enabled: true, sort_order: 20, sort_weight: weights.github });
+    }
+  }
   if (platformAccounts.notion?.mode !== 'disabled' && publish?.notion_enabled && publish?.notion_public_url) pages.push({ id: 'notion', label: 'Notion 公告发布页', url: publish.notion_public_url, enabled: true, sort_order: 30, sort_weight: weights.notion });
   if (platformAccounts.npm?.mode !== 'disabled' && publish?.npm_enabled && publish?.npm_package_name) {
     const inherited = platformAccounts.npm.mode === 'site' ? platformAccounts.npm.settings : platformSettings.npm;

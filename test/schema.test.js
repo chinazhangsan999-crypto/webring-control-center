@@ -85,3 +85,9 @@ test('永久发布页排序迁移保存独立权重配置', () => {
   const sql = fs.readFileSync(path.join(__dirname, '..', 'src', 'migrations', '014_publish_link_sorting.sql'), 'utf8');
   assert.match(sql, /publish_link_weights\s+JSONB\s+NOT NULL/i);
 });
+
+test('GitHub 仓库名迁移从旧完整仓库中自动回填', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'src', 'migrations', '019_github_repository_name.sql'), 'utf8');
+  assert.match(sql, /github_repo_name\s+TEXT\s+NOT NULL\s+DEFAULT ''/i);
+  assert.match(sql, /split_part\(github_repo, '\/', 2\)/i);
+});

@@ -79,6 +79,9 @@ test('Cloudflare 工作流确认项目和自定义域名后调用官方 Wrangler
   assert.ok(command.args.includes('pages'));
   assert.ok(command.args.includes('deploy'));
   assert.equal(command.options.env.CLOUDFLARE_API_TOKEN, 'secret');
+  assert.equal(command.options.env.HOME, command.options.env.XDG_CONFIG_HOME);
+  assert.equal(command.options.env.USERPROFILE, command.options.env.HOME);
+  assert.equal(command.options.env.XDG_CACHE_HOME, path.join(command.options.env.HOME, 'cache'));
   assert.ok(calls.some(url => url.includes('/domains/go.example.com')));
 });
 

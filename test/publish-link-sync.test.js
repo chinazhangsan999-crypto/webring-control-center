@@ -9,6 +9,7 @@ const { validateConfigSnapshot, ProtocolError } = require('../packages/shared-pr
 test('总后台只向对应导航站下发五类可打开的永久发布页', () => {
   const publish = {
     permanent_url: 'https://permanent.example/',
+    github_repo_name: 'site',
     github_pages_url: 'https://owner.github.io/site/',
     notion_enabled: true,
     notion_public_url: 'https://workspace.notion.site/page',
@@ -20,9 +21,9 @@ test('总后台只向对应导航站下发五类可打开的永久发布页', ()
     publish_link_weights: { cloudflare: 900, github: 800, notion: 700, 'npm:unpkg': 600, 'npm:esm': 500 }
   };
   const accounts = {
-    cloudflare: { mode: 'global' }, github: { mode: 'global' }, notion: { mode: 'global' }, npm: { mode: 'global' }
+    cloudflare: { mode: 'global' }, github: { mode: 'global', settings: {} }, notion: { mode: 'global' }, npm: { mode: 'global' }
   };
-  const settings = { npm: { lines: ['npmmirror', 'jsdelivr', 'unpkg', 'esm'], primary: 'unpkg' } };
+  const settings = { github: { username: 'owner' }, npm: { lines: ['npmmirror', 'jsdelivr', 'unpkg', 'esm'], primary: 'unpkg' } };
   const pages = publishPageLinks(publish, accounts, settings);
 
   assert.deepEqual(pages.map(item => item.id), ['cloudflare', 'github', 'notion', 'npm:unpkg', 'npm:esm']);

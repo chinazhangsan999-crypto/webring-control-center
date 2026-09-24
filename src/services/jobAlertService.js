@@ -31,7 +31,8 @@ async function enqueueJobAlert(job, outcome, result = {}, error = null) {
   ];
   if (site?.public_url) lines.push(`\u7ad9\u70b9地址\uff1a${site.public_url}`);
   if (site?.permanent_url) lines.push(`\u6c38\u4e45发布地址\uff1a${site.permanent_url}`);
-  if (site?.github_pages_url) lines.push(`GitHub \u53d1\u5e03地址\uff1a${site.github_pages_url}`);
+  const githubPagesUrl = result?.build?.github_pages_url || site?.github_pages_url;
+  if (githubPagesUrl) lines.push(`GitHub \u53d1\u5e03地址\uff1a${githubPagesUrl}`);
   if (site?.npm_enabled && site?.npm_package_name) {
     const cdns = result?.platforms?.npm?.cdns || npmCdnUrls(site.npm_package_name, 'latest', site.npm_cdn_lines, site.npm_primary_cdn);
     for (const item of cdns) {

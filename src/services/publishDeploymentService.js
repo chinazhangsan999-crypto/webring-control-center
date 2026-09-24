@@ -179,7 +179,13 @@ async function deployCloudflarePages(input, dependencies = {}) {
   const target = await ensureCloudflareTarget(input, fetchImpl);
   const wrangler = require.resolve('wrangler');
   const wranglerState = path.resolve(process.env.PUBLISH_WRANGLER_STATE_DIR || path.join(process.cwd(), 'var', '.wrangler'));
-  await fs.mkdir(wranglerState, { recursive: true });
+  const wranglerLegacyState = path.join(wranglerState, '.wrangler');
+  const wranglerCache = path.join(wranglerState, 'cache');
+  await Promise.all([
+    fs.mkdir(wranglerState, { recursive: true }),
+    fs.mkdir(wranglerLegacyState, { recursive: true }),
+    fs.mkdir(wranglerCache, { recursive: true })
+  ]);
   const args = [wrangler, 'pages', 'deploy', input.directory, '--project-name', input.cloudflareProject, '--branch', input.credentials.cloudflareBranch, '--commit-hash', input.sha256.slice(0, 40), '--commit-message', `发布永久页 ${input.sha256.slice(0, 12)}`];
   try {
     const { stdout = '', stderr = '' } = await run(process.execPath, args, {
@@ -191,7 +197,10 @@ async function deployCloudflarePages(input, dependencies = {}) {
         ...process.env,
         CLOUDFLARE_API_TOKEN: input.credentials.cloudflareToken,
         CLOUDFLARE_ACCOUNT_ID: input.credentials.cloudflareAccountId,
+        HOME: wranglerState,
+        USERPROFILE: wranglerState,
         XDG_CONFIG_HOME: wranglerState,
+        XDG_CACHE_HOME: wranglerCache,
         WRANGLER_SEND_METRICS: 'false'
       }
     });

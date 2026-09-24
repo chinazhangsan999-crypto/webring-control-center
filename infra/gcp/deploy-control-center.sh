@@ -7,6 +7,8 @@ release=/tmp/control-center-release.tgz
 staging=/tmp/control-center-release-$(date +%s)
 stamp=$(TZ=Asia/Shanghai date '+%Y%m%d-%H%M%S')
 code_backup=$root/backups/code-$stamp.tgz
+service_user=${CONTROL_CENTER_SERVICE_USER:-$(stat -c '%U' "$app_dir")}
+service_group=${CONTROL_CENTER_SERVICE_GROUP:-$(stat -c '%G' "$app_dir")}
 
 test -f "$release"
 mkdir -p "$staging" "$root/backups"
@@ -21,7 +23,7 @@ tar -czf "$code_backup" package.json package-lock.json compose.yaml assets publi
 rollback() {
   echo 'CONTROL_CENTER_DEPLOYMENT_FAILED_ROLLING_BACK' >&2
   tar -xzf "$code_backup" -C "$app_dir" || true
-  chown -R webring:webring "$app_dir"
+  chown -R "$service_user:$service_group" "$app_dir"
   systemctl restart control-center.service || true
 }
 trap rollback ERR
@@ -32,16 +34,21 @@ done
 install -m 644 "$staging/package.json" "$app_dir/package.json"
 install -m 644 "$staging/package-lock.json" "$app_dir/package-lock.json"
 install -m 644 "$staging/compose.yaml" "$app_dir/compose.yaml"
-chown -R webring:webring "$app_dir"
+chown -R "$service_user:$service_group" "$app_dir"
 cd "$app_dir"
-sudo -u webring npm ci --no-audit --no-fund
-install -d -o webring -g webring -m 700 \
+sudo -u "$service_user" npm ci --no-audit --no-fund
+install -d -o "$service_user" -g "$service_group" -m 700 \
   "$app_dir/var" \
   "$app_dir/.wrangler" \
   "$app_dir/node_modules/.cache/wrangler" \
-  "$root/var"
+  "$root/var" \
+  "$root/var/wrangler" \
+  "$root/var/wrangler/.wrangler" \
+  "$root/var/wrangler/cache"
 
-install -m 644 "$app_dir/infra/gcp/control-center.service" /etc/systemd/system/control-center.service
+sed -e "s/^User=.*/User=$service_user/" -e "s/^Group=.*/Group=$service_group/" \
+  "$app_dir/infra/gcp/control-center.service" > /etc/systemd/system/control-center.service
+chmod 644 /etc/systemd/system/control-center.service
 install -m 755 "$app_dir/infra/gcp/control-center-backup" /usr/local/sbin/control-center-backup
 install -m 644 "$app_dir/infra/gcp/control-center-backup.service" /etc/systemd/system/control-center-backup.service
 install -m 644 "$app_dir/infra/gcp/control-center-backup.timer" /etc/systemd/system/control-center-backup.timer

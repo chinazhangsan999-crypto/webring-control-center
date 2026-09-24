@@ -12,6 +12,7 @@ const PlatformSettingsService = require('./platformSettingsService');
 const SitePublishPlatformService = require('./sitePublishPlatformService');
 const { classifyJobError, retryDelaySeconds, completedPublishSteps } = require('./jobQueueService');
 const { npmVersionForJob, npmPageUrl, npmCdnUrls, resolveNpmPageEntryProvider, npmPackageFiles } = require('./npmPublishService');
+const { githubPublishTarget, repositoryNameFromFull } = require('./githubPublishTargetService');
 
 let stopped = true;
 let timer = null;
@@ -58,6 +59,14 @@ async function preparePublishPage(siteId, options = {}) {
   const effectiveConfig = await ControlService.resolveSiteConfig(siteId);
   const entries = publishEntries(site, effectiveConfig.nodes);
   const [settings, platformAccounts] = await Promise.all([PlatformSettingsService.safeSettings(), SitePublishPlatformService.safeSettings(siteId)]);
+  const githubAccount = platformAccounts.github;
+  const githubRepositoryName = site.github_repo_name || repositoryNameFromFull(site.github_repo);
+  if (githubAccount.mode !== 'disabled' && githubRepositoryName) {
+    const owner = githubAccount.mode === 'site' ? githubAccount.settings.username : settings.github.username;
+    const target = githubPublishTarget(owner, githubRepositoryName);
+    site.github_repo = target.fullRepository;
+    site.github_pages_url = target.pagesUrl;
+  }
   const npmAccount = platformAccounts.npm;
   const inheritedNpm = npmAccount.mode === 'site' ? npmAccount.settings : settings.npm;
   const npmLines = site.npm_cdn_mode === 'custom' ? site.npm_cdn_lines : inheritedNpm.lines;

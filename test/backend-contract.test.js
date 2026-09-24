@@ -60,9 +60,9 @@ test('永久发布页生成独立静态包并支持 npm 第三发布地址', () 
   const worker = source('src/services/jobWorker.js');
   const adminApp = source('public/app.js');
   assert.match(adminRoutes, /启用 Cloudflare 时必须填写自定义永久发布域名/);
-  assert.match(adminRoutes, /启用 GitHub 时必须填写 GitHub Pages 地址/);
+  assert.match(adminRoutes, /启用 GitHub 时必须填写 GitHub 仓库名/);
   assert.match(adminRoutes, /自定义永久发布域名不能使用 pages\.dev 原生地址/);
-  assert.match(adminRoutes, /GitHub Pages 地址必须使用 github\.io 原生地址/);
+  assert.match(adminRoutes, /githubPublishTarget/);
   assert.match(adminRoutes, /parsePublishPayload/);
   assert.match(worker, /renderPublishBundle/);
   assert.match(worker, /site\.public_url/);
@@ -74,6 +74,8 @@ test('永久发布页生成独立静态包并支持 npm 第三发布地址', () 
   assert.match(adminApp, /publish-open/);
   assert.match(adminApp, /打开页面/);
   assert.match(adminApp, /npm_package_name/);
+  assert.match(adminApp, /github_repo_name/);
+  assert.doesNotMatch(adminApp.slice(adminApp.indexOf('async function publishForm'), adminApp.indexOf('function npmTrustedPublisherGuide')), /name="github_pages_url"/);
   assert.match(adminApp, /page_title/);
 });
 
