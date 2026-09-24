@@ -50,3 +50,13 @@ test('Linux 运维脚本使用 LF 换行，避免 systemd 读取到 bash 回车'
     assert.doesNotMatch(content, /\r\n/, `${file} 必须使用 LF 换行`);
   }
 });
+
+test('部署与备份脚本沿用目标服务器服务用户且兼容单 Compose 文件', () => {
+  const deploy = fs.readFileSync(path.join(__dirname, '..', 'infra', 'gcp', 'deploy-control-center.sh'), 'utf8');
+  const backup = fs.readFileSync(path.join(__dirname, '..', 'infra', 'gcp', 'control-center-backup'), 'utf8');
+  assert.match(deploy, /service_user=.*stat -c/);
+  assert.match(deploy, /sudo -u "\$service_user"/);
+  assert.match(backup, /service_user=.*stat -c/);
+  assert.match(backup, /if \[\[ -f compose\.production\.yaml \]\]/);
+  assert.doesNotMatch(backup, /runuser -u webring/);
+});
