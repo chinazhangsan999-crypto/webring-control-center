@@ -60,6 +60,48 @@ test('GitHub 工作流建立完整静态树并启用 Pages 分支', async () => 
   assert.ok(calls.some(call => call.method === 'POST' && /\/pages$/.test(call.url)));
 });
 
+test('GitHub 仓库不存在时自动创建公开仓库并继续发布', async () => {
+  const bundle = await bundleDirectory();
+  const calls = [];
+  let blob = 0;
+  const fetchImpl = async (url, options = {}) => {
+    const method = options.method || 'GET';
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: String(url), method, body });
+    if (method === 'GET' && /\/repos\/owner\/new-publish$/.test(url)) return jsonResponse({ message: 'Not Found' }, 404);
+    if (method === 'GET' && /\/user$/.test(url)) return jsonResponse({ login: 'owner' });
+    if (method === 'POST' && /\/user\/repos$/.test(url)) return jsonResponse({ default_branch: 'main', full_name: 'owner/new-publish' }, 201);
+    if (method === 'GET' && /git\/ref\/heads\/gh-pages$/.test(url)) return jsonResponse({ message: 'Not Found' }, 404);
+    if (method === 'GET' && /git\/ref\/heads\/main$/.test(url)) return jsonResponse({ object: { sha: 'parent' } });
+    if (method === 'POST' && /git\/blobs$/.test(url)) return jsonResponse({ sha: `blob-${blob += 1}` }, 201);
+    if (method === 'POST' && /git\/trees$/.test(url)) return jsonResponse({ sha: 'tree-sha' }, 201);
+    if (method === 'POST' && /git\/commits$/.test(url)) return jsonResponse({ sha: 'commit-sha' }, 201);
+    if (method === 'POST' && /git\/refs$/.test(url)) return jsonResponse({ ref: 'refs/heads/gh-pages' }, 201);
+    if (method === 'GET' && /\/pages$/.test(url)) return jsonResponse({ message: 'Not Found' }, 404);
+    if (method === 'POST' && /\/pages$/.test(url)) return jsonResponse({ status: 'built' }, 201);
+    if (method === 'POST' && /\/pages\/builds$/.test(url)) return jsonResponse({ status: 'queued' }, 201);
+    throw new Error(`未覆盖请求：${method} ${url}`);
+  };
+
+  const result = await deployGithubPages({
+    ...bundle,
+    sha256: 'a'.repeat(64),
+    githubRepo: 'owner/new-publish',
+    githubPagesUrl: 'https://owner.github.io/new-publish/',
+    credentials: { githubToken: 'secret', githubBranch: 'gh-pages' }
+  }, { fetchImpl });
+
+  const create = calls.find(call => call.method === 'POST' && /\/user\/repos$/.test(call.url));
+  assert.deepEqual(create.body, {
+    name: 'new-publish',
+    description: '永久发布页（由星环总控自动维护）',
+    private: false,
+    auto_init: true
+  });
+  assert.equal(result.repository_created, true);
+  assert.equal(result.commit_sha, 'commit-sha');
+});
+
 test('Cloudflare 工作流确认项目和自定义域名后调用官方 Wrangler', async () => {
   const bundle = await bundleDirectory();
   const calls = [];
@@ -98,6 +140,30 @@ test('双平台独立执行，失败平台不会阻止另一平台完成', async
     return true;
   });
   assert.equal(progressSnapshots.at(-1).cloudflare.status, 'succeeded');
+});
+
+test('Cloudflare 自定义域名待生效时使用不可变部署地址验收', async () => {
+  const verifiedUrls = [];
+  const result = await deployDualPlatform({
+    permanentUrl: 'https://pending.example.com/',
+    sha256: '9'.repeat(64),
+    enabledPlatforms: { github: false, cloudflare: true, npm: false, notion: false }
+  }, {}, {
+    deployCloudflare: async () => ({
+      deployment_url: 'https://abc123.project.pages.dev',
+      custom_url: 'https://pending.example.com/',
+      domain_status: 'pending'
+    }),
+    verify: async url => {
+      verifiedUrls.push(url);
+      return { verified: true, manifest_url: `${url}/publish-manifest.json` };
+    }
+  });
+
+  assert.deepEqual(verifiedUrls, ['https://abc123.project.pages.dev']);
+  assert.equal(result.cloudflare.status, 'succeeded');
+  assert.equal(result.cloudflare.custom_domain_verified, false);
+  assert.match(result.cloudflare.custom_domain_warning, /等待 DNS/);
 });
 
 test('任务重试只执行上次失败的平台', async () => {

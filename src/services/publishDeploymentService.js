@@ -88,6 +88,40 @@ async function readBundleFiles(directory, fileNames) {
   return files;
 }
 
+async function resolveGithubRepository(fetchImpl, githubToken, owner, repo) {
+  const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  const existing = await githubRequest(fetchImpl, githubToken, base, { allowed: [404] });
+  if (existing.status === 200) return { repository: existing.data, created: false };
+
+  const identity = (await githubRequest(fetchImpl, githubToken, '/user')).data;
+  const personal = String(identity?.login || '').toLowerCase() === owner.toLowerCase();
+  const endpoint = personal ? '/user/repos' : `/orgs/${encodeURIComponent(owner)}/repos`;
+  try {
+    const created = await githubRequest(fetchImpl, githubToken, endpoint, {
+      method: 'POST',
+      body: {
+        name: repo,
+        description: '永久发布页（由星环总控自动维护）',
+        private: false,
+        auto_init: true
+      }
+    });
+    return { repository: created.data, created: true };
+  } catch (error) {
+    if (error instanceof DeploymentError && error.detail?.status === 422) {
+      throw new DeploymentError(`GitHub 仓库 ${owner}/${repo} 已存在，但当前 Token 无权访问`, {
+        platform: 'github', retryable: false, detail: error.detail
+      });
+    }
+    if (error instanceof DeploymentError && error.detail?.status === 404 && !personal) {
+      throw new DeploymentError(`GitHub 账号 ${owner} 不是当前 Token 用户或可管理的组织`, {
+        platform: 'github', retryable: false, detail: error.detail
+      });
+    }
+    throw error;
+  }
+}
+
 async function deployGithubPages(input, dependencies = {}) {
   const fetchImpl = dependencies.fetchImpl || fetch;
   const { githubToken, githubBranch } = input.credentials;
@@ -96,7 +130,8 @@ async function deployGithubPages(input, dependencies = {}) {
   }
   const { owner, repo } = parseGithubRepo(input.githubRepo);
   const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-  const repository = (await githubRequest(fetchImpl, githubToken, base)).data;
+  const resolvedRepository = await resolveGithubRepository(fetchImpl, githubToken, owner, repo);
+  const repository = resolvedRepository.repository;
   const targetRef = await githubRequest(fetchImpl, githubToken, `${base}/git/ref/heads/${githubBranch.split('/').map(encodeURIComponent).join('/')}`, { allowed: [404] });
   let parentSha = targetRef.status === 200 ? targetRef.data.object.sha : '';
   if (!parentSha) {
@@ -130,7 +165,7 @@ async function deployGithubPages(input, dependencies = {}) {
     await githubRequest(fetchImpl, githubToken, `${base}/pages`, { method: 'PUT', body: { build_type: 'legacy', source: { branch: githubBranch, path: '/' } } });
   }
   await githubRequest(fetchImpl, githubToken, `${base}/pages/builds`, { method: 'POST', allowed: [409] });
-  return { commit_sha: commit.data.sha, branch: githubBranch, url: input.githubPagesUrl };
+  return { commit_sha: commit.data.sha, branch: githubBranch, url: input.githubPagesUrl, repository_created: resolvedRepository.created };
 }
 
 function cloudflareHeaders(token) {
@@ -377,8 +412,18 @@ async function deployDualPlatform(input, previous = {}, dependencies = {}) {
   }]);
   if (enabled.cloudflare && progress.cloudflare.status !== 'succeeded') tasks.push(['cloudflare', async () => {
     const deployed = await (dependencies.deployCloudflare || deployCloudflarePages)(input, dependencies);
-    const verified = await (dependencies.verify || verifyPublishedManifest)(input.permanentUrl, input.sha256, dependencies);
-    return { status: 'succeeded', account_source: source.cloudflare || 'global', ...deployed, ...verified, finished_at: new Date().toISOString() };
+    if (!deployed.deployment_url) {
+      throw new DeploymentError('Cloudflare 未返回本次部署地址，无法校验发布内容', { platform: 'cloudflare', retryable: true });
+    }
+    const verified = await (dependencies.verify || verifyPublishedManifest)(deployed.deployment_url, input.sha256, dependencies);
+    let customDomain = {};
+    if (deployed.domain_status === 'active') {
+      const customVerified = await (dependencies.verify || verifyPublishedManifest)(input.permanentUrl, input.sha256, dependencies);
+      customDomain = { custom_domain_verified: true, custom_manifest_url: customVerified.manifest_url };
+    } else {
+      customDomain = { custom_domain_verified: false, custom_domain_warning: '页面已发布，自定义域名仍在等待 DNS/Cloudflare 验证' };
+    }
+    return { status: 'succeeded', account_source: source.cloudflare || 'global', ...deployed, ...verified, ...customDomain, finished_at: new Date().toISOString() };
   }]);
   const settled = await Promise.all(tasks.map(([, task]) => task().then(value => ({ value }), error => ({ error }))));
   settled.forEach((item, index) => {

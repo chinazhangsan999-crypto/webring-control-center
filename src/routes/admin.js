@@ -168,10 +168,20 @@ router.post('/sites/:id/publish/platforms/:provider/test', asyncRoute(async (req
     const token=platform.credentials.token;
     const repositoryName=config.github_repo_name||repositoryNameFromFull(config.github_repo);
     if(!repositoryName)throw badRequest('请先填写 GitHub 仓库名');
-    const repo=githubTarget(platform.settings.username,repositoryName).fullRepository;
-    const response=await fetch(`https://api.github.com/repos/${repo}`,{headers:{Accept:'application/vnd.github+json',Authorization:`Bearer ${token}`,'User-Agent':'webring-control-center'},signal:AbortSignal.timeout(15000)});
-    const data=await response.json().catch(()=>null);if(!response.ok)throw badRequest(`GitHub 仓库连接失败：${data?.message||`HTTP ${response.status}`}`);
-    result={message:`GitHub 仓库连接正常（${platform.source==='global'?'全局账号':'本站独立账号'}）`};
+    const target=githubTarget(platform.settings.username,repositoryName);const repo=target.fullRepository;
+    const headers={Accept:'application/vnd.github+json',Authorization:`Bearer ${token}`,'User-Agent':'webring-control-center'};
+    const response=await fetch(`https://api.github.com/repos/${repo}`,{headers,signal:AbortSignal.timeout(15000)});
+    const data=await response.json().catch(()=>null);
+    if(response.status===404){
+      const identityResponse=await fetch('https://api.github.com/user',{headers,signal:AbortSignal.timeout(15000)});
+      const identity=await identityResponse.json().catch(()=>null);
+      if(!identityResponse.ok)throw badRequest(`GitHub Token 验证失败：${identity?.message||`HTTP ${identityResponse.status}`}`);
+      const ownerType=String(identity?.login||'').toLowerCase()===target.owner.toLowerCase()?'个人账号':'组织账号';
+      result={message:`GitHub Token 有效；仓库不存在，首次发布将自动在${ownerType} ${target.owner} 下创建公开仓库`};
+    }else{
+      if(!response.ok)throw badRequest(`GitHub 仓库连接失败：${data?.message||`HTTP ${response.status}`}`);
+      result={message:`GitHub 仓库连接正常（${platform.source==='global'?'全局账号':'本站独立账号'}）`};
+    }
   }else if(provider==='cloudflare'){
     if(!config.cloudflare_project)throw badRequest('请先填写 Cloudflare 项目');
     const url=`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(platform.settings.account_id)}/pages/projects/${encodeURIComponent(config.cloudflare_project)}`;
