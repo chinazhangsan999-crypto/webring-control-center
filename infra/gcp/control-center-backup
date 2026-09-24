@@ -8,13 +8,17 @@ stamp=$(TZ=Asia/Shanghai date '+%Y%m%d-%H%M%S')
 temporary="$backup_dir/.control-center-$stamp.dump.tmp"
 destination="$backup_dir/control-center-$stamp.dump"
 service_user=${CONTROL_CENTER_SERVICE_USER:-$(stat -c '%U' "$app_dir")}
-compose_args=(--env-file "$secret_dir/postgres.env" -f compose.yaml)
+compose_project=${CONTROL_CENTER_COMPOSE_PROJECT:-control-center}
+compose_args=(-p "$compose_project" --env-file "$secret_dir/postgres.env" -f compose.yaml)
 if [[ -f compose.production.yaml ]]; then compose_args+=(-f compose.production.yaml); fi
 
 notify_failure() {
   rm -f "$temporary"
-  runuser -u "$service_user" -- /bin/bash -c 'set -a; . "$1"; set +a; exec /usr/bin/node "$2" "$3" "$4"' _ \
-    "$secret_dir/control-center.env" "$app_dir/scripts/send-control-alert.js" \
+  set -a
+  . "$secret_dir/control-center.env"
+  set +a
+  runuser -u "$service_user" --preserve-environment -- /usr/bin/node \
+    "$app_dir/scripts/send-control-alert.js" \
     '🔴 总后台数据库备份失败' "备份时间：$(TZ=Asia/Shanghai date '+%F %T')" || true
 }
 trap notify_failure ERR

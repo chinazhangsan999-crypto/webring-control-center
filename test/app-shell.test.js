@@ -57,6 +57,10 @@ test('部署与备份脚本沿用目标服务器服务用户且兼容单 Compose
   assert.match(deploy, /service_user=.*stat -c/);
   assert.match(deploy, /sudo -u "\$service_user"/);
   assert.match(backup, /service_user=.*stat -c/);
+  assert.match(backup, /compose_project=.*control-center/);
+  assert.match(backup, /compose_args=\(-p "\$compose_project"/);
+  assert.match(backup, /\. "\$secret_dir\/control-center\.env"/);
+  assert.match(backup, /runuser -u "\$service_user" --preserve-environment/);
   assert.match(backup, /if \[\[ -f compose\.production\.yaml \]\]/);
   assert.doesNotMatch(backup, /runuser -u webring/);
 });
