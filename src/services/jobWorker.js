@@ -142,7 +142,7 @@ async function buildPublishPage(job, options = {}) {
   }
   const html = bundle['index.html'];
   const npmEntryProvider = resolveNpmPageEntryProvider(npmLines, npmPrimary);
-  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, notion_enabled: platformAccounts.notion.mode !== 'disabled' && site.notion_enabled, notion_sync_enabled: platformAccounts.notion.mode !== 'disabled' && site.notion_sync_enabled, notion_page_id: site.notion_page_id, notion_public_url: site.notion_public_url, notion_sync_block_id: site.notion_sync_block_id, notion_site_name: site.name, notion_entries: entries, npm_package_name: npmEnabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: npmEnabled && npmEntryProvider ? npmPageUrl(site.npm_package_name, 'latest', npmEntryProvider) : '', npm_page_urls: npmEnabled ? npmUrls.filter(item => item.page_entry) : [], npm_cdn_lines: npmEnabled ? npmLines : [], npm_primary_cdn: npmEnabled ? npmPrimary : '', platform_modes: Object.fromEntries(Object.entries(platformAccounts).map(([name,value])=>[name,value.mode])), publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
+  const build = { output: path.join(artifactDirectory, 'index.html'), directory: artifactDirectory, files: names, bytes: Buffer.byteLength(html), manifest: JSON.parse(bundle['publish-manifest.json']), github_repo: site.github_repo, github_workflow_file: platformAccounts.github.mode === 'site' ? (platformAccounts.github.settings.workflow_file || 'publish-npm.yml') : 'publish-npm.yml', cloudflare_project: site.cloudflare_project, permanent_url: site.permanent_url, github_pages_url: site.github_pages_url, notion_enabled: platformAccounts.notion.mode !== 'disabled' && site.notion_enabled, notion_sync_enabled: platformAccounts.notion.mode !== 'disabled' && site.notion_sync_enabled, notion_page_id: site.notion_page_id, notion_public_url: site.notion_public_url, notion_sync_block_id: site.notion_sync_block_id, notion_site_name: site.name, notion_entries: entries, npm_package_name: npmEnabled ? site.npm_package_name : '', npm_version: npmVersion, npm_page_url: npmEnabled && npmEntryProvider ? npmPageUrl(site.npm_package_name, 'latest', npmEntryProvider) : '', npm_page_urls: npmEnabled ? npmUrls.filter(item => item.page_entry) : [], npm_cdn_lines: npmEnabled ? npmLines : [], npm_primary_cdn: npmEnabled ? npmPrimary : '', platform_modes: Object.fromEntries(Object.entries(platformAccounts).map(([name,value])=>[name,value.mode])), publish_revision: site.publish_revision, nodes_revision: site.nodes_revision };
   await saveStoredPublishBuild(artifactDirectory, build);
   return build;
 }
@@ -181,7 +181,8 @@ async function runPublishWorkflow(job, dependencies = {}) {
   const progress = { ...previous, build };
   const npmState = await one('SELECT npm_bootstrap_status FROM publish_pages WHERE site_id=$1', [job.site_id]);
   const npmBootstrapStatus = npmState?.npm_bootstrap_status || 'not_started';
-  const npmOidcReady = npmBootstrapStatus !== 'not_started';
+  const npmOidcVerification = job.payload?.npm_oidc_verify === true;
+  const npmOidcReady = npmBootstrapStatus === 'oidc_verified' || (npmOidcVerification && npmBootstrapStatus === 'oidc_verifying');
   const enabledPlatforms = {
     github: resolvedPlatforms.platforms.github.enabled,
     cloudflare: resolvedPlatforms.platforms.cloudflare.enabled,
@@ -190,7 +191,9 @@ async function runPublishWorkflow(job, dependencies = {}) {
   };
   const platformSkipReasons = {};
   if (resolvedPlatforms.platforms.npm.enabled && build.npm_package_name && !npmOidcReady) {
-    platformSkipReasons.npm = { code: 'NPM_BOOTSTRAP_REQUIRED', reason: '需要先使用短效 Granular Token 完成 npm 首次发布' };
+    platformSkipReasons.npm = npmBootstrapStatus === 'not_started'
+      ? { code: 'NPM_BOOTSTRAP_REQUIRED', reason: '需要先使用短效 Granular Token 完成 npm 首次发布' }
+      : { code: 'NPM_OIDC_SETUP_REQUIRED', reason: '首次发布已完成，等待管理员配置并验证 npm Trusted Publisher' };
   }
   const progressTotal = 1 + Object.values(enabledPlatforms).filter(Boolean).length;
   await saveJobProgress(job.id, progress, 1, progressTotal);
@@ -200,6 +203,7 @@ async function runPublishWorkflow(job, dependencies = {}) {
       files: build.files,
       sha256: build.manifest.sha256,
       githubRepo: build.github_repo,
+      githubWorkflowFile: build.github_workflow_file,
       githubPagesUrl: build.github_pages_url,
       cloudflareProject: build.cloudflare_project,
       npmPackageName: build.npm_package_name,
@@ -237,9 +241,9 @@ async function runPublishWorkflow(job, dependencies = {}) {
     }
     const cdns = platforms.npm?.cdns || [];
     const notion = platforms.notion;
-    if(platforms.npm?.status==='succeeded'&&build.npm_version){
+    if(platforms.npm?.status==='succeeded'&&build.npm_version&&npmOidcVerification){
       await query(`UPDATE publish_pages SET npm_bootstrap_status='oidc_verified',npm_oidc_verified_at=NOW(),npm_bootstrap_last_error='',updated_at=NOW()
-        WHERE site_id=$1 AND npm_bootstrap_status<>'oidc_verified' AND (npm_bootstrap_version='' OR npm_bootstrap_version<>$2)`,[job.site_id,build.npm_version]);
+        WHERE site_id=$1 AND npm_bootstrap_status='oidc_verifying' AND (npm_bootstrap_version='' OR npm_bootstrap_version<>$2)`,[job.site_id,build.npm_version]);
     }
     if (cdns.length && build.npm_version) {
       await transaction(async client => {
@@ -254,6 +258,14 @@ async function runPublishWorkflow(job, dependencies = {}) {
     return { ...progress, platforms };
   } catch (error) {
     await saveNotionState(job.site_id, build, error.progress?.notion).catch(persistError => console.error('保存 Notion 同步状态失败', persistError));
+    if (npmOidcVerification) {
+      const npmResult = error.progress?.npm;
+      if (npmResult?.status === 'succeeded' && build.npm_version) {
+        await query(`UPDATE publish_pages SET npm_bootstrap_status='oidc_verified',npm_oidc_verified_at=NOW(),npm_bootstrap_last_error='',updated_at=NOW() WHERE site_id=$1`, [job.site_id]);
+      } else if (npmResult?.status === 'failed') {
+        await query(`UPDATE publish_pages SET npm_bootstrap_status='oidc_pending',npm_bootstrap_last_error=$2,updated_at=NOW() WHERE site_id=$1`, [job.site_id, String(npmResult.error || error.message || error).slice(0, 1000)]);
+      }
+    }
     error.progress = { ...progress, platforms: error.progress || {} };
     throw error;
   }

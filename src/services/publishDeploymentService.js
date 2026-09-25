@@ -7,6 +7,7 @@ const { execFile } = require('node:child_process');
 
 const execFileAsync = promisify(execFile);
 const { npmPageUrl, npmCdnUrls, resolveNpmPageEntryProvider } = require('./npmPublishService');
+const NpmRegistryService = require('./npmRegistryService');
 const { syncNotionPage } = require('./notionPublishService');
 const GITHUB_API = 'https://api.github.com';
 const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
@@ -319,6 +320,30 @@ async function triggerNpmPublish(input, dependencies = {}) {
   return { trigger_commit_sha: commit.data.sha };
 }
 
+async function waitForNpmWorkflow(input, commitSha, dependencies = {}) {
+  const fetchImpl = dependencies.fetchImpl || fetch;
+  const wait = dependencies.wait || (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
+  const attempts = Number(dependencies.npmWorkflowAttempts || 60);
+  const intervalMs = Number(dependencies.npmWorkflowIntervalMs || 3_000);
+  const { owner, repo } = parseGithubRepo(input.githubRepo);
+  const workflowFile = String(input.githubWorkflowFile || 'publish-npm.yml').trim();
+  const endpoint = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${encodeURIComponent(workflowFile)}/runs?event=push&head_sha=${encodeURIComponent(commitSha)}&per_page=10`;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const response = await githubRequest(fetchImpl, input.credentials.githubToken, endpoint);
+    const run = Array.isArray(response.data?.workflow_runs)
+      ? response.data.workflow_runs.find(item => item.head_sha === commitSha)
+      : null;
+    if (run?.status === 'completed') {
+      if (run.conclusion === 'success') return { workflow_run_id: run.id, workflow_url: run.html_url, workflow_conclusion: run.conclusion };
+      throw new DeploymentError(`npm GitHub Actions 发布失败（${run.conclusion || 'unknown'}）。请检查 npm Trusted Publisher 是否精确绑定 ${owner}/${repo}、${workflowFile}，并允许直接 npm publish。${run.html_url || ''}`, {
+        platform: 'npm', retryable: false, detail: { workflow_run_id: run.id, workflow_url: run.html_url, conclusion: run.conclusion }
+      });
+    }
+    if (attempt + 1 < attempts) await wait(intervalMs);
+  }
+  throw new DeploymentError('等待 npm GitHub Actions 运行结果超时', { platform: 'npm', retryable: true });
+}
+
 async function deployNpmPackage(input, dependencies = {}) {
   const verify = dependencies.verify || verifyPublishedManifest;
   const primary = resolveNpmPageEntryProvider(input.npmCdnLines || ['unpkg'], input.npmPrimaryCdn) || 'unpkg';
@@ -326,23 +351,33 @@ async function deployNpmPackage(input, dependencies = {}) {
   const exactUrl = npmPageUrl(input.npmPackageName, input.npmVersion, 'unpkg');
   const stableUrl = npmPageUrl(input.npmPackageName, 'latest', primary);
   const verificationStableUrl = npmPageUrl(input.npmPackageName, 'latest', 'unpkg');
-  const exactBaseUrl = exactUrl.replace(/index\.html$/, '');
   const stableBaseUrl = verificationStableUrl.replace(/index\.html$/, '');
-  const existing = await readPublishedManifest(exactBaseUrl, dependencies);
-  if (existing && existing.sha256 !== input.sha256) {
-    throw new DeploymentError('npm 版本内容冲突：该精确版本已存在且清单摘要不同，请创建新的发布任务', { platform: 'npm', retryable: false });
+  let existing;
+  try {
+    existing = await (dependencies.inspectNpmRegistry || NpmRegistryService.inspectRegistryVersion)(input.npmPackageName, input.npmVersion, { fetchImpl: dependencies.fetchImpl, registry: NpmRegistryService.NPM_REGISTRY });
+  } catch (error) {
+    throw new DeploymentError(String(error.message || error), { platform: 'npm', retryable: true });
   }
+  if (existing && existing.manifest.sha256 !== input.sha256) throw new DeploymentError('npm 版本内容冲突：该精确版本已存在且清单摘要不同，请创建新的发布任务', { platform: 'npm', retryable: false });
   let triggered = {};
   let exact;
   try {
-    if (existing) exact = { verified: true, manifest_url: existing.manifest_url };
+    if (existing) exact = { verified: true, tarball_url: existing.tarball_url, manifest_sha256: existing.manifest.sha256 };
     else {
       triggered = await (dependencies.triggerNpm || triggerNpmPublish)(input, dependencies);
-      exact = await verify(exactBaseUrl, input.sha256, { ...dependencies, attempts: dependencies.npmAttempts || 60, intervalMs: dependencies.npmIntervalMs || 10_000 });
+      const workflow = await (dependencies.waitForNpmWorkflow || waitForNpmWorkflow)(input, triggered.trigger_commit_sha, dependencies);
+      triggered = { ...triggered, ...workflow };
+      exact = await (dependencies.verifyNpmRegistry || NpmRegistryService.verifyRegistryVersion)(input.npmPackageName, input.npmVersion, input.sha256, {
+        fetchImpl: dependencies.fetchImpl,
+        registry: NpmRegistryService.NPM_REGISTRY,
+        attempts: dependencies.npmRegistryAttempts || 30,
+        intervalMs: dependencies.npmRegistryIntervalMs || 2_000,
+        wait: dependencies.wait
+      });
     }
     const stable = await verifyNpmStable(stableBaseUrl, input.sha256, dependencies);
     const cdns = await verifyNpmCdnLines(input, dependencies);
-    return { ...triggered, package: input.npmPackageName, version: input.npmVersion, url: stableUrl, exact_url: exactUrl, exact_manifest_url: exact.manifest_url, manifest_url: stable.manifest_url || exact.manifest_url, stable_status: stable.status, stable_error: stable.error || '', cdns, already_published: Boolean(existing) };
+    return { ...triggered, package: input.npmPackageName, version: input.npmVersion, url: stableUrl, exact_url: exactUrl, registry_tarball_url: exact.tarball_url, manifest_url: stable.manifest_url || exact.tarball_url, stable_status: stable.status, stable_error: stable.error || '', cdns, already_published: Boolean(existing) };
   } catch (error) {
     if (error instanceof DeploymentError) error.platform = 'npm';
     throw error;
@@ -533,6 +568,7 @@ module.exports = {
   deployGithubPages,
   deployCloudflarePages,
   triggerNpmPublish,
+  waitForNpmWorkflow,
   deployNpmPackage,
   verifyNpmCdnLine,
   verifyNpmCdnLines,

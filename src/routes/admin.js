@@ -483,10 +483,11 @@ router.put('/sites/:id/publish', asyncRoute(async(req,res)=>{
 }));
 router.post('/sites/:id/publish/jobs', asyncRoute(async(req,res)=>{
   const siteId=numericId(req.params.id);
+  const npmOidcVerify=req.body?.npm_oidc_verify===true;
   const resolved=await SitePublishPlatformService.resolveForDeployment(siteId);
   const enabled=resolved.platforms;
   const result=await transaction(async client=>{
-    const config=(await client.query(`SELECT p.permanent_url,p.github_pages_url,p.github_repo,p.github_repo_name,p.cloudflare_project,p.npm_enabled,p.npm_package_name,p.notion_sync_enabled,p.notion_page_id,p.notion_public_url,r.publish_revision,r.nodes_revision
+    const config=(await client.query(`SELECT p.permanent_url,p.github_pages_url,p.github_repo,p.github_repo_name,p.cloudflare_project,p.npm_enabled,p.npm_package_name,p.npm_bootstrap_status,p.notion_sync_enabled,p.notion_page_id,p.notion_public_url,r.publish_revision,r.nodes_revision
       FROM publish_pages p JOIN site_revisions r ON r.site_id=p.site_id WHERE p.site_id=$1`,[siteId])).rows[0];
     if(!config)throw notFound('站点不存在');
     if(enabled.cloudflare.enabled&&(!config.permanent_url||!config.cloudflare_project))throw badRequest('请先配置 Cloudflare 自定义域名和项目');
@@ -497,17 +498,21 @@ router.post('/sites/:id/publish/jobs', asyncRoute(async(req,res)=>{
       config.github_repo=target.fullRepository;config.github_pages_url=target.pagesUrl;
     }
     if(enabled.npm.enabled&&(!enabled.github.enabled||!config.npm_package_name))throw badRequest('npm OIDC 发布需要启用 GitHub 并配置 npm 包名');
+    if(npmOidcVerify&&!['published','oidc_pending'].includes(config.npm_bootstrap_status))throw conflict('当前 npm 状态不能开始 OIDC 验证');
     if(config.notion_sync_enabled&&(!enabled.notion.enabled||!config.notion_page_id||!config.notion_public_url))throw badRequest('请先启用 Notion 并配置页面 ID 和公开地址');
     if(!enabled.cloudflare.enabled&&!enabled.github.enabled&&!enabled.npm.enabled&&!config.notion_sync_enabled)throw badRequest('请至少启用一个发布平台');
-    const progressTotal=1+(enabled.cloudflare.enabled?1:0)+(enabled.github.enabled?1:0)+(enabled.npm.enabled?1:0)+(config.notion_sync_enabled?1:0);
+    const npmRuns=enabled.npm.enabled&&(config.npm_bootstrap_status==='oidc_verified'||npmOidcVerify);
+    const progressTotal=1+(enabled.cloudflare.enabled?1:0)+(enabled.github.enabled?1:0)+(npmRuns?1:0)+(config.notion_sync_enabled?1:0);
     const inserted=await client.query(`INSERT INTO jobs(type,site_id,payload,progress_total) VALUES('publish.deploy',$1,$2::jsonb,$3)
-      ON CONFLICT (type,site_id) WHERE type='publish.deploy' AND status IN ('queued','running') DO NOTHING RETURNING *`,[siteId,JSON.stringify({requested_by:req.admin.id,publish_revision:config.publish_revision,nodes_revision:config.nodes_revision,platform_bindings:resolved.bindings}),progressTotal]);
+      ON CONFLICT (type,site_id) WHERE type='publish.deploy' AND status IN ('queued','running') DO NOTHING RETURNING *`,[siteId,JSON.stringify({requested_by:req.admin.id,publish_revision:config.publish_revision,nodes_revision:config.nodes_revision,platform_bindings:resolved.bindings,npm_oidc_verify:npmOidcVerify}),progressTotal]);
     const created=Boolean(inserted.rows[0]);
     const job=inserted.rows[0]||(await client.query(`SELECT * FROM jobs WHERE type='publish.deploy' AND site_id=$1 AND status IN ('queued','running') ORDER BY id DESC LIMIT 1`,[siteId])).rows[0];
-    if(created)await ControlService.audit(actor(req),'publish.deploy.queue','site',siteId,{job_id:job.id},req.ip,client);
+    if(npmOidcVerify&&!created)throw conflict('该站点已有发布任务在执行，请等待完成后再验证 OIDC');
+    if(npmOidcVerify)await client.query(`UPDATE publish_pages SET npm_bootstrap_status='oidc_verifying',npm_bootstrap_last_error='',updated_at=NOW() WHERE site_id=$1`,[siteId]);
+    if(created)await ControlService.audit(actor(req),npmOidcVerify?'npm.oidc.verify.queue':'publish.deploy.queue','site',siteId,{job_id:job.id},req.ip,client);
     return {job,created};
   });
-  return ok(res,result.job,result.created?'发布任务已加入队列':'该站点已有发布任务在执行',result.created?202:200);
+  return ok(res,result.job,result.created?(npmOidcVerify?'npm OIDC 验证任务已加入队列':'发布任务已加入队列'):'该站点已有发布任务在执行',result.created?202:200);
 }));
 
 router.post('/sites/:id/publish/npm/bootstrap', asyncRoute(async(req,res)=>{
@@ -540,7 +545,7 @@ router.post('/sites/:id/publish/npm/bootstrap', asyncRoute(async(req,res)=>{
       githubRepo:build.github_repo||config.github_repo,workflowFile:githubSettings.workflow_file||'publish-npm.yml'
     }));
     await transaction(async client=>{
-      await client.query(`UPDATE publish_pages SET npm_bootstrap_status='published',npm_bootstrap_version=$2,
+      await client.query(`UPDATE publish_pages SET npm_bootstrap_status='oidc_pending',npm_bootstrap_version=$2,
         npm_bootstrap_published_at=NOW(),npm_bootstrap_last_error='',updated_at=NOW() WHERE site_id=$1`,[siteId,result.version]);
       await ControlService.audit(actor(req),'npm.bootstrap.publish','site',siteId,{job_id:config.job_id,package:result.package,version:result.version,already_published:result.already_published},req.ip,client);
     });

@@ -37,8 +37,7 @@ test('首次 npm 发布只把短效 Token 交给子进程环境且关闭 provena
     inspectPackage: async () => ({ exists: false }),
     verifyIdentity: async () => 'publisher',
     runProcess: async input => { processInput = input; return { stdout: 'published', stderr: '' }; },
-    verifyRegistryVersion: async () => true,
-    verifyManifest: async () => ({ verified: true, manifest_url: 'https://unpkg.test/manifest.json' })
+    verifyRegistryPackage: async () => ({ verified: true, tarball_url: 'https://registry.npmjs.org/brand-new-page/-/brand-new-page-0.0.41.tgz' })
   });
 
   assert.equal(result.status, 'published');

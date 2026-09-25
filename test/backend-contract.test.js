@@ -179,6 +179,9 @@ test('npm 首次发布使用一次性 Token 并在成功后展示 Trusted Publis
   assert.match(bootstrap, /--provenance=false/);
   assert.doesNotMatch(bootstrap, /INSERT INTO[\s\S]+token/i);
   assert.match(worker, /npm_bootstrap_status='oidc_verified'/);
+  assert.match(worker, /NPM_OIDC_SETUP_REQUIRED/);
+  assert.match(worker, /npmBootstrapStatus === 'oidc_verified'/);
   assert.match(app, /首次发布成功，还需配置 Trusted Publisher/);
+  assert.match(app, /npm_oidc_verify:true/);
   assert.match(app, /allowed_action\|\|'npm publish'/);
 });

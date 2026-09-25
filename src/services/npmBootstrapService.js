@@ -4,11 +4,11 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { normalizePackageName, npmPageUrl } = require('./npmPublishService');
-const { verifyPublishedManifest } = require('./publishDeploymentService');
+const { normalizePackageName } = require('./npmPublishService');
+const NpmRegistryService = require('./npmRegistryService');
 
 const activeSites = new Set();
-const NPM_REGISTRY = 'https://registry.npmjs.org';
+const NPM_REGISTRY = NpmRegistryService.NPM_REGISTRY;
 
 function cleanToken(value) {
   const token = String(value || '').trim();
@@ -109,15 +109,6 @@ async function publishWithToken({ token, registry, directory }, dependencies = {
   }
 }
 
-async function verifyRegistryVersion(packageName, version, registry = NPM_REGISTRY, fetchImpl = fetch) {
-  for (let attempt = 0; attempt < 15; attempt += 1) {
-    const state = await inspectPackage(packageName, version, registry, fetchImpl);
-    if (state.exactVersionExists) return true;
-    if (attempt < 14) await new Promise(resolve => setTimeout(resolve, 2_000));
-  }
-  throw new Error('npm 首次发布完成，但 Registry 尚未出现精确版本');
-}
-
 async function bootstrapNpmPackage(input, dependencies = {}) {
   const token = cleanToken(input.token);
   const packageName = normalizePackageName(input.packageName);
@@ -138,11 +129,10 @@ async function bootstrapNpmPackage(input, dependencies = {}) {
   const inspector = dependencies.inspectPackage || ((name, release, targetRegistry) => inspectPackage(name, release, targetRegistry, dependencies.fetchImpl));
   const existing = await inspector(packageName, version, registry);
   const instructions = trustedPublisherInstructions(packageName, input.githubRepo, input.workflowFile);
-  const exactBaseUrl = npmPageUrl(packageName, version, 'unpkg').replace(/index\.html$/, '');
-  const verifyManifest = dependencies.verifyManifest || verifyPublishedManifest;
+  const verifyRegistry = dependencies.verifyRegistryPackage || ((name, release, expectedSha256, targetRegistry) => NpmRegistryService.verifyRegistryVersion(name, release, expectedSha256, { fetchImpl: dependencies.fetchImpl, registry: targetRegistry }));
   if (existing.exactVersionExists) {
-    const verified = await verifyManifest(exactBaseUrl, input.expectedSha256, { fetchImpl: dependencies.fetchImpl, attempts: 10, intervalMs: 2_000 });
-    return { status: 'published', already_published: true, package: packageName, version, manifest_url: verified.manifest_url, instructions };
+    const verified = await verifyRegistry(packageName, version, input.expectedSha256, registry);
+    return { status: 'published', already_published: true, package: packageName, version, tarball_url: verified.tarball_url, instructions };
   }
   if (existing.exists) throw new Error('该 npm 包已经存在，不属于首次发布；请改用 OIDC 发布新版本');
 
@@ -152,10 +142,8 @@ async function bootstrapNpmPackage(input, dependencies = {}) {
     throw new Error(`npm Token 属于 ${username}，与配置账号 ${input.expectedUsername} 不一致`);
   }
   await (dependencies.publishWithToken || publishWithToken)({ token, registry, directory: input.directory }, dependencies);
-  const verifyVersion = dependencies.verifyRegistryVersion || ((name, release, targetRegistry) => verifyRegistryVersion(name, release, targetRegistry, dependencies.fetchImpl));
-  await verifyVersion(packageName, version, registry);
-  const verified = await verifyManifest(exactBaseUrl, input.expectedSha256, { fetchImpl: dependencies.fetchImpl, attempts: 30, intervalMs: 2_000 });
-  return { status: 'published', already_published: false, package: packageName, version, manifest_url: verified.manifest_url, instructions };
+  const verified = await verifyRegistry(packageName, version, input.expectedSha256, registry);
+  return { status: 'published', already_published: false, package: packageName, version, tarball_url: verified.tarball_url, instructions };
 }
 
 async function runExclusive(siteId, operation) {
@@ -173,7 +161,6 @@ module.exports = {
   inspectPackage,
   verifyIdentity,
   publishWithToken,
-  verifyRegistryVersion,
   bootstrapNpmPackage,
   runExclusive
 };

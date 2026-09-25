@@ -81,6 +81,13 @@ test('npm 首次发布迁移只保存流程状态，不保存临时 Token', () =
   assert.doesNotMatch(sql, /token/i);
 });
 
+test('npm OIDC 状态迁移将首次发布与自动发布验证分开', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'src', 'migrations', '020_npm_oidc_states.sql'), 'utf8');
+  assert.match(sql, /oidc_pending/);
+  assert.match(sql, /oidc_verifying/);
+  assert.match(sql, /oidc_verified/);
+});
+
 test('永久发布页排序迁移保存独立权重配置', () => {
   const sql = fs.readFileSync(path.join(__dirname, '..', 'src', 'migrations', '014_publish_link_sorting.sql'), 'utf8');
   assert.match(sql, /publish_link_weights\s+JSONB\s+NOT NULL/i);

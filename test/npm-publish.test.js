@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizePackageName, npmVersionForJob, npmPageUrl, npmPackageFiles } = require('../src/services/npmPublishService');
-const { deployDualPlatform, deployNpmPackage, verifyNpmCdnLine } = require('../src/services/publishDeploymentService');
+const { deployDualPlatform, deployNpmPackage, verifyNpmCdnLine, waitForNpmWorkflow } = require('../src/services/publishDeploymentService');
 
 test('npm 包名支持安全的非 scoped 名称并生成稳定地址', () => {
   assert.equal(normalizePackageName('Link-Status-Page'), 'link-status-page');
@@ -48,7 +48,7 @@ test('npm 精确版本存在不同清单时立即停止，不触发覆盖发布'
   await assert.rejects(() => deployNpmPackage({
     npmPackageName: 'link-status-page', npmVersion: '0.0.99', sha256: 'a'.repeat(64)
   }, {
-    fetchImpl: async () => new Response(JSON.stringify({ sha256: 'b'.repeat(64) }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    inspectNpmRegistry: async () => ({ manifest: { sha256: 'b'.repeat(64) }, tarball_url: 'https://registry.test/package.tgz' }),
     triggerNpm: async () => { triggered = true; }
   }), error => error.retryable === false && /版本内容冲突/.test(error.message));
   assert.equal(triggered, false);
@@ -60,7 +60,10 @@ test('npm 精确版本校验成功后，latest 传播延迟不会阻塞发布结
     npmPackageName: 'link-status-page', npmVersion: '0.0.99', sha256: 'a'.repeat(64), npmCdnLines: ['unpkg'], npmPrimaryCdn: 'unpkg'
   }, {
     fetchImpl: async () => new Response('', { status: 404 }),
+    inspectNpmRegistry: async () => null,
     triggerNpm: async () => ({ trigger_commit_sha: 'trigger' }),
+    waitForNpmWorkflow: async () => ({ workflow_run_id: 123, workflow_conclusion: 'success' }),
+    verifyNpmRegistry: async () => ({ verified: true, tarball_url: 'https://registry.test/package.tgz' }),
     verify: async url => {
       calls.push(url);
       if (url.includes('@latest')) throw new Error('远端清单版本尚未更新');
@@ -70,6 +73,25 @@ test('npm 精确版本校验成功后，latest 传播延迟不会阻塞发布结
   assert.equal(result.stable_status, 'syncing');
   assert.equal(result.exact_url, 'https://unpkg.com/link-status-page@0.0.99/index.html');
   assert.ok(calls.some(url => url.includes('@latest')));
+});
+
+test('npm OIDC 工作流失败时直接显示 Trusted Publisher 错误，不再误报 CDN 404', async () => {
+  await assert.rejects(() => deployNpmPackage({
+    npmPackageName: 'link-status-page', npmVersion: '0.0.100', sha256: 'a'.repeat(64)
+  }, {
+    inspectNpmRegistry: async () => null,
+    triggerNpm: async () => ({ trigger_commit_sha: 'trigger' }),
+    waitForNpmWorkflow: async () => { throw Object.assign(new Error('npm GitHub Actions 发布失败，请检查 Trusted Publisher'), { retryable: false }); }
+  }), error => error.retryable === false && /Trusted Publisher/.test(error.message));
+});
+
+test('GitHub Actions 失败会返回准确的 npm Trusted Publisher 提示', async () => {
+  await assert.rejects(() => waitForNpmWorkflow({
+    githubRepo: 'owner/repository', githubWorkflowFile: 'publish-npm.yml', credentials: { githubToken: 'secret' }
+  }, 'commit-sha', {
+    npmWorkflowAttempts: 1,
+    fetchImpl: async () => new Response(JSON.stringify({ workflow_runs: [{ id: 42, head_sha: 'commit-sha', status: 'completed', conclusion: 'failure', html_url: 'https://github.test/run/42' }] }), { status: 200 })
+  }), error => error.retryable === false && /Trusted Publisher/.test(error.message) && /run\/42/.test(error.message));
 });
 
 test('npm 包分发线路不会被误判为网页入口，npmmirror 不参与网页校验', async () => {
