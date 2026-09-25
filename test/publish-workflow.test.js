@@ -106,10 +106,15 @@ test('Cloudflare 工作流确认项目和自定义域名后调用官方 Wrangler
   const bundle = await bundleDirectory();
   const calls = [];
   let command = null;
-  const fetchImpl = async url => {
-    calls.push(String(url));
+  const fetchImpl = async (url, options = {}) => {
+    const method = options.method || 'GET';
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: String(url), method, body });
+    if (/\/zones\?/.test(url)) return jsonResponse({ success: true, result: [{ id: 'zone-id', name: 'example.com' }] });
+    if (/\/dns_records\?/.test(url)) return jsonResponse({ success: true, result: [] });
+    if (method === 'POST' && /\/dns_records$/.test(url)) return jsonResponse({ success: true, result: { id: 'record-id' } }, 201);
     if (/\/domains\//.test(url)) return jsonResponse({ success: true, result: { status: 'active' } });
-    return jsonResponse({ success: true, result: { name: 'publish-project' } });
+    return jsonResponse({ success: true, result: { name: 'publish-project', subdomain: 'publish-project.pages.dev' } });
   };
   const execFileImpl = async (file, args, options) => {
     command = { file, args, options };
@@ -124,7 +129,21 @@ test('Cloudflare 工作流确认项目和自定义域名后调用官方 Wrangler
   assert.equal(command.options.env.HOME, command.options.env.XDG_CONFIG_HOME);
   assert.equal(command.options.env.USERPROFILE, command.options.env.HOME);
   assert.equal(command.options.env.XDG_CACHE_HOME, path.join(command.options.env.HOME, 'cache'));
-  assert.ok(calls.some(url => url.includes('/domains/go.example.com')));
+  assert.ok(calls.some(call => call.url.includes('/domains/go.example.com')));
+  const dnsCreate = calls.find(call => call.method === 'POST' && /\/dns_records$/.test(call.url));
+  assert.deepEqual(dnsCreate.body, { type: 'CNAME', name: 'go.example.com', content: 'publish-project.pages.dev', ttl: 1, proxied: true, comment: 'Managed by Webring Control Center' });
+  assert.equal(result.dns_status, 'configured');
+});
+
+test('Cloudflare 自动 DNS 不覆盖同名 A 记录', async () => {
+  const bundle = await bundleDirectory();
+  const fetchImpl = async (url) => {
+    if (/\/zones\?/.test(url)) return jsonResponse({ success: true, result: [{ id: 'zone-id', name: 'example.com' }] });
+    if (/\/dns_records\?/.test(url)) return jsonResponse({ success: true, result: [{ id: 'old-a', type: 'A', content: '192.0.2.1' }] });
+    if (/\/domains\//.test(url)) return jsonResponse({ success: true, result: { status: 'pending' } });
+    return jsonResponse({ success: true, result: { name: 'publish-project', subdomain: 'publish-project.pages.dev' } });
+  };
+  await assert.rejects(() => deployCloudflarePages({ directory: bundle.directory, sha256: 'b'.repeat(64), cloudflareProject: 'publish-project', permanentUrl: 'https://go.example.com/', credentials: { cloudflareToken: 'secret', cloudflareAccountId: 'account', cloudflareBranch: 'main' } }, { fetchImpl }), error => error.retryable === false && /已有 A 记录/.test(error.message));
 });
 
 test('双平台独立执行，失败平台不会阻止另一平台完成', async () => {

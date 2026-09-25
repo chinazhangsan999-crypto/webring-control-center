@@ -53,7 +53,7 @@ https://owner.github.io/repository/
 
 ## Cloudflare 准备
 
-Cloudflare API Token 至少需要账户级 `Cloudflare Pages: Edit`，并限制到承载发布页的账户。配置项“Cloudflare 项目”填写小写项目名。
+Cloudflare API Token 需要 `Cloudflare Pages: Edit`、`Zone: Read` 和 `DNS: Edit`，并限制到承载发布页的账户与域名。配置项“Cloudflare 项目”填写小写项目名。
 
 工作流会：
 
@@ -62,7 +62,7 @@ Cloudflare API Token 至少需要账户级 `Cloudflare Pages: Edit`，并限制�
 3. 通过 Wrangler Direct Upload 上传静态目录；
 4. 使用自定义永久域名读取远端 manifest 验证。
 
-自定义域名仍需满足 Cloudflare 的域名所有权和 DNS 条件。若域名不在该 Cloudflare 账户、验证记录缺失或证书仍在签发，发布上传可能成功，但最终校验会失败并进入重试；后台会保留具体平台错误。
+系统会先把自定义域名关联到 Pages 项目，再自动在同一 Cloudflare 账号的活动 Zone 中创建或校正 CNAME。若域名不在该账号、Token 缺少 DNS 权限，或同名 A/AAAA/NS 记录发生冲突，后台会保留明确错误且不会覆盖冲突记录。证书签发期间仍会显示“域名待生效”。
 
 `pages.dev` 只作为 Cloudflare 内部部署结果记录，不会展示为用户应收藏的永久地址。
 

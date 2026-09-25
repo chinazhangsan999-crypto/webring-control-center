@@ -191,21 +191,63 @@ async function cloudflareRequest(fetchImpl, token, endpoint, options = {}) {
   }
 }
 
+function cloudflareZoneCandidates(hostname) {
+  const labels = String(hostname || '').toLowerCase().split('.').filter(Boolean);
+  return labels.slice(0, -1).map((_, index) => labels.slice(index).join('.'));
+}
+
+async function findCloudflareZone(fetchImpl, token, accountId, hostname) {
+  for (const name of cloudflareZoneCandidates(hostname)) {
+    const search = new URLSearchParams({ name, 'account.id': accountId, status: 'active', per_page: '1' });
+    const response = await cloudflareRequest(fetchImpl, token, `/zones?${search}`);
+    const zone = Array.isArray(response.data?.result) ? response.data.result[0] : null;
+    if (zone?.id) return zone;
+  }
+  return null;
+}
+
+async function ensureCloudflareDnsRecord(fetchImpl, token, accountId, hostname, targetHostname) {
+  const zone = await findCloudflareZone(fetchImpl, token, accountId, hostname);
+  if (!zone) {
+    return { dns_status: 'manual_required', dns_warning: '自定义域名不属于当前 Cloudflare 账号中的活动 Zone，无法自动创建 DNS 记录' };
+  }
+  const search = new URLSearchParams({ name: hostname, per_page: '100' });
+  const recordsResponse = await cloudflareRequest(fetchImpl, token, `/zones/${encodeURIComponent(zone.id)}/dns_records?${search}`);
+  const records = Array.isArray(recordsResponse.data?.result) ? recordsResponse.data.result : [];
+  const cname = records.find(record => record.type === 'CNAME');
+  const conflict = records.find(record => ['A', 'AAAA', 'NS'].includes(record.type));
+  if (!cname && conflict) {
+    throw new DeploymentError(`自定义域名已有 ${conflict.type} 记录，不能自动改为 Pages CNAME；请先人工确认并删除冲突记录`, { platform: 'cloudflare', retryable: false });
+  }
+  const record = { type: 'CNAME', name: hostname, content: targetHostname, ttl: 1, proxied: true, comment: 'Managed by Webring Control Center' };
+  if (!cname) {
+    const created = await cloudflareRequest(fetchImpl, token, `/zones/${encodeURIComponent(zone.id)}/dns_records`, { method: 'POST', body: record });
+    return { dns_status: 'configured', dns_zone: zone.name, dns_record_id: created.data?.result?.id || '', dns_record_created: true, dns_target: targetHostname };
+  }
+  const matches = String(cname.content || '').toLowerCase() === targetHostname.toLowerCase() && cname.proxied === true;
+  if (!matches) {
+    await cloudflareRequest(fetchImpl, token, `/zones/${encodeURIComponent(zone.id)}/dns_records/${encodeURIComponent(cname.id)}`, { method: 'PATCH', body: record });
+  }
+  return { dns_status: 'configured', dns_zone: zone.name, dns_record_id: cname.id, dns_record_created: false, dns_record_updated: !matches, dns_target: targetHostname };
+}
+
 async function ensureCloudflareTarget(input, fetchImpl) {
   const { cloudflareToken, cloudflareAccountId, cloudflareBranch } = input.credentials;
   if (!cloudflareAccountId) throw new DeploymentError('缺少 PUBLISH_CLOUDFLARE_ACCOUNT_ID', { platform: 'cloudflare', retryable: false });
   const project = encodeURIComponent(input.cloudflareProject);
   const root = `/accounts/${encodeURIComponent(cloudflareAccountId)}/pages/projects`;
   const existing = await cloudflareRequest(fetchImpl, cloudflareToken, `${root}/${project}`, { allowed: [404] });
-  if (existing.status === 404) {
-    await cloudflareRequest(fetchImpl, cloudflareToken, root, { method: 'POST', body: { name: input.cloudflareProject, production_branch: cloudflareBranch } });
-  }
+  const projectState = existing.status === 404
+    ? (await cloudflareRequest(fetchImpl, cloudflareToken, root, { method: 'POST', body: { name: input.cloudflareProject, production_branch: cloudflareBranch } })).data?.result
+    : existing.data?.result;
   const hostname = new URL(input.permanentUrl).hostname.toLowerCase();
   const domain = await cloudflareRequest(fetchImpl, cloudflareToken, `${root}/${project}/domains/${encodeURIComponent(hostname)}`, { allowed: [404] });
   const configured = domain.status === 404
     ? (await cloudflareRequest(fetchImpl, cloudflareToken, `${root}/${project}/domains`, { method: 'POST', body: { name: hostname } })).data?.result
     : domain.data?.result;
-  return { hostname, domain_status: configured?.status || 'pending' };
+  const pagesHostname = String(projectState?.subdomain || `${input.cloudflareProject}.pages.dev`).toLowerCase();
+  const dns = await ensureCloudflareDnsRecord(fetchImpl, cloudflareToken, cloudflareAccountId, hostname, pagesHostname);
+  return { hostname, domain_status: configured?.status || 'pending', ...dns };
 }
 
 async function deployCloudflarePages(input, dependencies = {}) {
@@ -241,7 +283,7 @@ async function deployCloudflarePages(input, dependencies = {}) {
     });
     const output = `${stdout}\n${stderr}`;
     const deploymentUrl = output.match(/https:\/\/[^\s]+\.pages\.dev\/?/i)?.[0] || '';
-    return { deployment_url: deploymentUrl, custom_url: input.permanentUrl, project: input.cloudflareProject, domain_status: target.domain_status };
+    return { deployment_url: deploymentUrl, custom_url: input.permanentUrl, project: input.cloudflareProject, ...target };
   } catch (error) {
     const detail = redactSecret(error.stderr || error.message || error, input.credentials.cloudflareToken).slice(0, 500);
     throw new DeploymentError(`Wrangler 发布失败：${detail}`, { platform: 'cloudflare', retryable: true });
