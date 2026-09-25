@@ -278,6 +278,7 @@ async function deployCloudflarePages(input, dependencies = {}) {
         USERPROFILE: wranglerState,
         XDG_CONFIG_HOME: wranglerState,
         XDG_CACHE_HOME: wranglerCache,
+        WRANGLER_CACHE_DIR: wranglerCache,
         WRANGLER_SEND_METRICS: 'false'
       }
     });

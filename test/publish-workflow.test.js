@@ -129,6 +129,7 @@ test('Cloudflare 工作流确认项目和自定义域名后调用官方 Wrangler
   assert.equal(command.options.env.HOME, command.options.env.XDG_CONFIG_HOME);
   assert.equal(command.options.env.USERPROFILE, command.options.env.HOME);
   assert.equal(command.options.env.XDG_CACHE_HOME, path.join(command.options.env.HOME, 'cache'));
+  assert.equal(command.options.env.WRANGLER_CACHE_DIR, path.join(command.options.env.HOME, 'cache'));
   assert.ok(calls.some(call => call.url.includes('/domains/go.example.com')));
   const dnsCreate = calls.find(call => call.method === 'POST' && /\/dns_records$/.test(call.url));
   assert.deepEqual(dnsCreate.body, { type: 'CNAME', name: 'go.example.com', content: 'publish-project.pages.dev', ttl: 1, proxied: true, comment: 'Managed by Webring Control Center' });
