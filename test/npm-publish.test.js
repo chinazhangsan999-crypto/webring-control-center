@@ -75,6 +75,68 @@ test('npm 精确版本校验成功后，latest 传播延迟不会阻塞发布结
   assert.ok(calls.some(url => url.includes('@latest')));
 });
 
+test('npm 工作流成功后持久化已接收状态，Registry 延迟不会丢失幂等信息', async () => {
+  let accepted;
+  await assert.rejects(() => deployNpmPackage({
+    npmPackageName: 'link-status-page', npmVersion: '0.0.101', sha256: 'c'.repeat(64)
+  }, {
+    inspectNpmRegistry: async () => null,
+    triggerNpm: async () => ({ trigger_commit_sha: 'accepted-commit' }),
+    waitForNpmWorkflow: async () => ({ workflow_run_id: 101, workflow_url: 'https://github.test/run/101', workflow_conclusion: 'success' }),
+    verifyNpmRegistry: async () => { throw new Error('Registry 尚未出现版本'); },
+    onNpmAccepted: async value => { accepted = value; }
+  }), error => error.retryable === true
+    && error.detail?.publication_accepted === true
+    && error.detail?.registry_processing === true
+    && error.detail?.version === '0.0.101');
+  assert.equal(accepted.trigger_commit_sha, 'accepted-commit');
+  assert.equal(accepted.manifest_sha256, 'c'.repeat(64));
+});
+
+test('npm 重试已接收版本时只等待 Registry，不再次触发 GitHub Actions', async () => {
+  let triggered = 0;
+  const result = await deployNpmPackage({
+    npmPackageName: 'link-status-page', npmVersion: '0.0.102', sha256: 'd'.repeat(64), npmCdnLines: ['unpkg'], npmPrimaryCdn: 'unpkg'
+  }, {
+    previousNpm: {
+      publication_accepted: true,
+      package: 'link-status-page',
+      version: '0.0.102',
+      manifest_sha256: 'd'.repeat(64),
+      trigger_commit_sha: 'previous-commit',
+      workflow_run_id: 102,
+      workflow_url: 'https://github.test/run/102',
+      workflow_conclusion: 'success'
+    },
+    inspectNpmRegistry: async () => null,
+    triggerNpm: async () => { triggered += 1; return {}; },
+    verifyNpmRegistry: async () => ({ verified: true, tarball_url: 'https://registry.test/package.tgz' }),
+    verify: async () => ({ verified: true, manifest_url: 'https://cdn.test/publish-manifest.json' }),
+    fetchImpl: async () => new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } })
+  });
+  assert.equal(triggered, 0);
+  assert.equal(result.trigger_commit_sha, 'previous-commit');
+  assert.equal(result.registry_processing, false);
+});
+
+test('三平台重试把上次 npm 已接收信息传给部署器', async () => {
+  const previousNpm = { status: 'failed', publication_accepted: true, package: 'link-status-page', version: '0.0.103', manifest_sha256: 'e'.repeat(64) };
+  let resumed;
+  const result = await deployDualPlatform({
+    githubPagesUrl: 'https://owner.github.io/publish/',
+    npmPackageName: 'link-status-page', npmVersion: '0.0.103', sha256: 'e'.repeat(64),
+    enabledPlatforms: { github: true, cloudflare: false, npm: true, notion: false }
+  }, { github: { status: 'succeeded' }, npm: previousNpm }, {
+    deployNpm: async (_input, options) => {
+      resumed = options.previousNpm;
+      await options.onNpmAccepted({ ...previousNpm, accepted_at: '2026-09-25T10:00:00.000Z' });
+      return { package: 'link-status-page', version: '0.0.103' };
+    }
+  });
+  assert.equal(resumed, previousNpm);
+  assert.equal(result.npm.status, 'succeeded');
+});
+
 test('npm OIDC 工作流失败时直接显示 Trusted Publisher 错误，不再误报 CDN 404', async () => {
   await assert.rejects(() => deployNpmPackage({
     npmPackageName: 'link-status-page', npmVersion: '0.0.100', sha256: 'a'.repeat(64)

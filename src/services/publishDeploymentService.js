@@ -359,25 +359,57 @@ async function deployNpmPackage(input, dependencies = {}) {
     throw new DeploymentError(String(error.message || error), { platform: 'npm', retryable: true });
   }
   if (existing && existing.manifest.sha256 !== input.sha256) throw new DeploymentError('npm 版本内容冲突：该精确版本已存在且清单摘要不同，请创建新的发布任务', { platform: 'npm', retryable: false });
-  let triggered = {};
+  const previousNpm = dependencies.previousNpm || {};
+  const canResume = previousNpm.publication_accepted === true
+    && previousNpm.package === input.npmPackageName
+    && previousNpm.version === input.npmVersion
+    && previousNpm.manifest_sha256 === input.sha256;
+  let triggered = canResume ? {
+    publication_accepted: true,
+    package: previousNpm.package,
+    version: previousNpm.version,
+    manifest_sha256: previousNpm.manifest_sha256,
+    trigger_commit_sha: previousNpm.trigger_commit_sha,
+    workflow_run_id: previousNpm.workflow_run_id,
+    workflow_url: previousNpm.workflow_url,
+    workflow_conclusion: previousNpm.workflow_conclusion,
+    accepted_at: previousNpm.accepted_at
+  } : {};
   let exact;
   try {
     if (existing) exact = { verified: true, tarball_url: existing.tarball_url, manifest_sha256: existing.manifest.sha256 };
     else {
-      triggered = await (dependencies.triggerNpm || triggerNpmPublish)(input, dependencies);
-      const workflow = await (dependencies.waitForNpmWorkflow || waitForNpmWorkflow)(input, triggered.trigger_commit_sha, dependencies);
-      triggered = { ...triggered, ...workflow };
-      exact = await (dependencies.verifyNpmRegistry || NpmRegistryService.verifyRegistryVersion)(input.npmPackageName, input.npmVersion, input.sha256, {
-        fetchImpl: dependencies.fetchImpl,
-        registry: NpmRegistryService.NPM_REGISTRY,
-        attempts: dependencies.npmRegistryAttempts || 30,
-        intervalMs: dependencies.npmRegistryIntervalMs || 2_000,
-        wait: dependencies.wait
-      });
+      if (!canResume) {
+        triggered = await (dependencies.triggerNpm || triggerNpmPublish)(input, dependencies);
+        const workflow = await (dependencies.waitForNpmWorkflow || waitForNpmWorkflow)(input, triggered.trigger_commit_sha, dependencies);
+        triggered = {
+          ...triggered,
+          ...workflow,
+          publication_accepted: true,
+          package: input.npmPackageName,
+          version: input.npmVersion,
+          manifest_sha256: input.sha256,
+          accepted_at: new Date().toISOString()
+        };
+      }
+      await dependencies.onNpmAccepted?.(triggered);
+      try {
+        exact = await (dependencies.verifyNpmRegistry || NpmRegistryService.verifyRegistryVersion)(input.npmPackageName, input.npmVersion, input.sha256, {
+          fetchImpl: dependencies.fetchImpl,
+          registry: NpmRegistryService.NPM_REGISTRY,
+          attempts: dependencies.npmRegistryAttempts || 180,
+          intervalMs: dependencies.npmRegistryIntervalMs || 5_000,
+          wait: dependencies.wait
+        });
+      } catch (error) {
+        throw new DeploymentError(`npm 已接收 ${input.npmPackageName}@${input.npmVersion}，正在等待 Registry 完成处理：${String(error.message || error)}`, {
+          platform: 'npm', retryable: true, detail: { ...triggered, registry_processing: true }
+        });
+      }
     }
     const stable = await verifyNpmStable(stableBaseUrl, input.sha256, dependencies);
     const cdns = await verifyNpmCdnLines(input, dependencies);
-    return { ...triggered, package: input.npmPackageName, version: input.npmVersion, url: stableUrl, exact_url: exactUrl, registry_tarball_url: exact.tarball_url, manifest_url: stable.manifest_url || exact.tarball_url, stable_status: stable.status, stable_error: stable.error || '', cdns, already_published: Boolean(existing) };
+    return { ...triggered, publication_accepted: Boolean(triggered.publication_accepted || existing), registry_processing: false, package: input.npmPackageName, version: input.npmVersion, manifest_sha256: input.sha256, url: stableUrl, exact_url: exactUrl, registry_tarball_url: exact.tarball_url, manifest_url: stable.manifest_url || exact.tarball_url, stable_status: stable.status, stable_error: stable.error || '', cdns, already_published: Boolean(existing) };
   } catch (error) {
     if (error instanceof DeploymentError) error.platform = 'npm';
     throw error;
@@ -519,10 +551,17 @@ async function deployDualPlatform(input, previous = {}, dependencies = {}) {
       progress.npm = { status: 'running', account_source: source.npm || 'global', started_at: new Date().toISOString() };
       await dependencies.onProgress?.(progress);
       try {
-        const deployed = await (dependencies.deployNpm || deployNpmPackage)(input, dependencies);
+        const deployed = await (dependencies.deployNpm || deployNpmPackage)(input, {
+          ...dependencies,
+          previousNpm: previous.npm,
+          onNpmAccepted: async accepted => {
+            progress.npm = { status: 'processing', account_source: source.npm || 'global', ...accepted };
+            await dependencies.onProgress?.(progress);
+          }
+        });
         progress.npm = { status: 'succeeded', account_source: source.npm || 'global', ...deployed, finished_at: new Date().toISOString() };
       } catch (error) {
-        progress.npm = { status: 'failed', account_source: source.npm || 'global', error: String(error.message || error).slice(0, 500), retryable: error.retryable !== false, finished_at: new Date().toISOString() };
+        progress.npm = { status: 'failed', account_source: source.npm || 'global', ...(error.detail && typeof error.detail === 'object' ? error.detail : {}), error: String(error.message || error).slice(0, 500), retryable: error.retryable !== false, finished_at: new Date().toISOString() };
       }
       await dependencies.onProgress?.(progress);
     }
