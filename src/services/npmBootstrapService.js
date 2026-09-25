@@ -81,15 +81,27 @@ function runProcess({ command, args, cwd, env, timeoutMs = 120_000 }) {
 async function publishWithToken({ token, registry, directory }, dependencies = {}) {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'control-center-npm-'));
   const npmrc = path.join(temporary, '.npmrc');
+  const cache = path.join(temporary, 'cache');
   try {
     await fs.chmod(temporary, 0o700);
+    await fs.mkdir(cache, { mode: 0o700 });
     await fs.writeFile(npmrc, `registry=${registry}\n//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}\nprovenance=false\n`, { mode: 0o600 });
     const runner = dependencies.runProcess || runProcess;
     return await runner({
       command: process.platform === 'win32' ? 'npm.cmd' : 'npm',
       args: ['publish', '--access', 'public', '--provenance=false', '--ignore-scripts', '--registry', registry],
       cwd: directory,
-      env: { ...process.env, NODE_AUTH_TOKEN: token, NPM_CONFIG_USERCONFIG: npmrc, NPM_CONFIG_PROVENANCE: 'false' },
+      env: {
+        ...process.env,
+        HOME: temporary,
+        USERPROFILE: temporary,
+        NODE_AUTH_TOKEN: token,
+        NPM_CONFIG_USERCONFIG: npmrc,
+        NPM_CONFIG_CACHE: cache,
+        npm_config_cache: cache,
+        NPM_CONFIG_PROVENANCE: 'false',
+        NPM_CONFIG_UPDATE_NOTIFIER: 'false'
+      },
       timeoutMs: 120_000
     });
   } finally {

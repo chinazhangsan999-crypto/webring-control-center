@@ -43,6 +43,11 @@ test('首次 npm 发布只把短效 Token 交给子进程环境且关闭 provena
 
   assert.equal(result.status, 'published');
   assert.equal(processInput.env.NODE_AUTH_TOKEN, 'npm_short_lived_secret_token');
+  assert.equal(processInput.env.USERPROFILE, processInput.env.HOME);
+  assert.equal(path.dirname(processInput.env.NPM_CONFIG_USERCONFIG), processInput.env.HOME);
+  assert.equal(processInput.env.NPM_CONFIG_CACHE, path.join(processInput.env.HOME, 'cache'));
+  assert.equal(processInput.env.npm_config_cache, processInput.env.NPM_CONFIG_CACHE);
+  assert.equal(processInput.env.NPM_CONFIG_UPDATE_NOTIFIER, 'false');
   assert.equal(processInput.args.includes('--provenance=false'), true);
   assert.equal(processInput.args.join(' ').includes('npm_short_lived_secret_token'), false);
   assert.equal(JSON.stringify(result).includes('npm_short_lived_secret_token'), false);
