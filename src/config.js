@@ -23,8 +23,8 @@ const TRUST_PROXY = String(process.env.TRUST_PROXY || 'loopback').trim();
 const SETTINGS_ENCRYPTION_KEY = String(process.env.SETTINGS_ENCRYPTION_KEY || '').trim();
 
 if (!DATABASE_URL) throw new Error('缺少 DATABASE_URL');
-if (NODE_ENV === 'production' && INITIAL_ADMIN_PASSWORD && INITIAL_ADMIN_PASSWORD.length < 12) {
-  throw new Error('生产环境 INITIAL_ADMIN_PASSWORD 至少需要 12 位');
+if (NODE_ENV === 'production' && INITIAL_ADMIN_PASSWORD && INITIAL_ADMIN_PASSWORD.length < 8) {
+  throw new Error('生产环境 INITIAL_ADMIN_PASSWORD 至少需要 8 位');
 }
 
 module.exports = {

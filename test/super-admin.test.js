@@ -11,8 +11,9 @@ test('超级管理员用户名支持中英文但拒绝空格和过短值', () =>
   assert.throws(() => normalizeUsername('admin user'), /3-64/);
 });
 
-test('超级管理员新密码至少 12 位且不包含用户名', () => {
+test('超级管理员新密码至少 8 位且不包含用户名', () => {
   assert.equal(validateNewPassword('Safe-Pass-2026!', 'rootadmin'), 'Safe-Pass-2026!');
-  assert.throws(() => validateNewPassword('short', 'rootadmin'), /12-200/);
+  assert.equal(validateNewPassword('admin123', 'rootadmin'), 'admin123');
+  assert.throws(() => validateNewPassword('short', 'rootadmin'), /8-200/);
   assert.throws(() => validateNewPassword('xxROOTADMINxx-2026', 'rootadmin'), /不能包含/);
 });

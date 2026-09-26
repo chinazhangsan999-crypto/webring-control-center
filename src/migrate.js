@@ -22,8 +22,8 @@ async function migrate() {
 
   const count = await one('SELECT COUNT(*)::int AS count FROM admins');
   if (!count.count) {
-    if (!INITIAL_ADMIN_PASSWORD || INITIAL_ADMIN_PASSWORD.length < 12) {
-      throw new Error('首次启动需要设置至少 12 位的 INITIAL_ADMIN_PASSWORD');
+    if (!INITIAL_ADMIN_PASSWORD || INITIAL_ADMIN_PASSWORD.length < 8) {
+      throw new Error('首次启动需要设置至少 8 位的 INITIAL_ADMIN_PASSWORD');
     }
     const passwordHash = await bcrypt.hash(INITIAL_ADMIN_PASSWORD, 12);
     await pool.query('INSERT INTO admins(username, password_hash) VALUES ($1, $2)', [INITIAL_ADMIN_USERNAME, passwordHash]);

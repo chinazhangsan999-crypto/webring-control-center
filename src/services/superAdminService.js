@@ -14,7 +14,7 @@ function normalizeUsername(value) {
 
 function validateNewPassword(value, username) {
   const password = String(value || '');
-  if (password.length < 12 || password.length > 200) throw badRequest('新密码长度需为 12-200 位');
+  if (password.length < 8 || password.length > 200) throw badRequest('新密码长度需为 8-200 位');
   if (password.toLocaleLowerCase().includes(username.toLocaleLowerCase())) throw badRequest('新密码不能包含管理员用户名');
   return password;
 }
